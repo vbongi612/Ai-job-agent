@@ -80,6 +80,7 @@ def test_adzuna():
         "details": r.text[:1500]
     }
 
+
 def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
     app_id, app_key = _adzuna_credentials()
 
@@ -89,30 +90,46 @@ def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
             "Add them as root-level Streamlit Secrets."
         )
 
-    params = {
+    base = {
         "app_id": app_id,
         "app_key": app_key,
         "results_per_page": min(limit, 20),
         "what": query,
         "where": where,
-        "salary_min": salary_min,
-        "full_time": 1,
-        "permanent": 1,
         "content-type": "application/json",
         "sort_by": "date",
     }
 
-    try:
-        r = requests.get(ADZUNA_BASE, params=params, timeout=20)
-    except Exception as e:
-        raise RuntimeError(f"Could not reach Adzuna: {e}")
+    # Start with the user's salary floor. If that produces nothing, retry
+    # without optional employment filters; this prevents a valid search from
+    # becoming empty simply because Adzuna lacks salary/type metadata.
+    attempts = [
+        {**base, "salary_min": salary_min, "full_time": 1, "permanent": 1},
+        {**base, "salary_min": salary_min},
+        {**base},
+    ]
 
-    if not r.ok:
-        raise RuntimeError(f"Adzuna HTTP {r.status_code}: {r.text[:1000]}")
+    last_error = None
+    data = None
 
-    data = r.json()
+    for params in attempts:
+        try:
+            r = requests.get(ADZUNA_BASE, params=params, timeout=20)
+        except Exception as e:
+            last_error = f"Could not reach Adzuna: {e}"
+            continue
+
+        if r.ok:
+            data = r.json()
+            if data.get("results"):
+                break
+        else:
+            last_error = f"Adzuna HTTP {r.status_code}: {r.text[:1000]}"
+
+    if data is None:
+        raise RuntimeError(last_error or "Adzuna returned no response.")
+
     jobs = []
-
     for x in data.get("results", []):
         loc = (x.get("location") or {}).get("display_name") or where
         company = (x.get("company") or {}).get("display_name") or "Unknown company"
@@ -124,13 +141,18 @@ def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
             "employment_type": x.get("contract_time") or "Full-time",
             "salary_min": x.get("salary_min"),
             "salary_max": x.get("salary_max"),
-            "salary": f"${x.get('salary_min', '')}–${x.get('salary_max', '')}" if x.get("salary_min") or x.get("salary_max") else None,
+            "salary": (
+                f"${x.get('salary_min', '')}–${x.get('salary_max', '')}"
+                if x.get("salary_min") or x.get("salary_max") else None
+            ),
             "description": x.get("description", ""),
             "url": x.get("redirect_url"),
             "source": "Adzuna",
-            "role_terms": [x.get("title", ""), (x.get("category") or {}).get("label", "")],
+            "role_terms": [
+                x.get("title", ""),
+                (x.get("category") or {}).get("label", "")
+            ],
             "skill_terms": [],
             "required": [],
         })
-
     return jobs

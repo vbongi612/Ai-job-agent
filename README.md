@@ -1,8 +1,9 @@
-# AI Job Agent v3
+# AI Job Agent v6
 
-Fixes the live-job display so provider HTML is converted to readable text.
+Chicago search fix:
+- Searches each target role separately instead of using one OR query.
+- Uses Adzuna's documented keyword + location search pattern.
+- Retries without optional full-time/permanent filters if a restrictive query returns no results.
+- Keeps salary filtering and requirement screening.
 
-Current flow:
-Resume -> live jobs -> qualification screening -> QUALIFIED / REVIEW / DO NOT APPLY.
-
-Remote search uses Himalayas. Chicago search uses Adzuna when credentials are added to Streamlit Secrets.
+Adzuna credentials remain in Streamlit Secrets only.

@@ -72,15 +72,19 @@ else:
                     errors.append(f"Remote / Himalayas ({q}): {e}")
 
         if "Chicago" in location:
-            try:
-                jobs.extend(search_adzuna(
-                    query=" OR ".join(role_queries[:3]),
-                    where="Chicago",
-                    salary_min=min_salary,
-                    limit=max_results
-                ))
-            except Exception as e:
-                errors.append(f"Chicago / Adzuna: {e}")
+            # Search each target role separately. Adzuna's documented examples use
+            # ordinary keyword queries; separate searches are more reliable than
+            # sending one "A OR B OR C" string.
+            for q in role_queries[:4]:
+                try:
+                    jobs.extend(search_adzuna(
+                        query=q,
+                        where="Chicago",
+                        salary_min=min_salary,
+                        limit=max_results
+                    ))
+                except Exception as e:
+                    errors.append(f"Chicago / Adzuna ({q}): {e}")
 
         for err in errors:
             st.error(err)
