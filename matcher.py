@@ -70,124 +70,161 @@ def _text(job):
         " ".join(map(str, job.get("skill_terms", []))),
     ]).lower()
 
+
 def score_job(profile, job):
-    text = _text(job)
-    title = str(job.get("title", "")).lower()
-    reasons = []
+    """
+    Conservative role-fit scorer.
 
-    actual_years = profile.get("years_experience", 0)
+    The previous version rewarded broad skill overlap, which could let unrelated
+    jobs (e.g. cybersecurity/audit) through. This version first establishes
+    whether the job belongs to the user's target occupational family, then
+    scores skills/experience only inside that relevant family.
+    """
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    text = f"{title} {desc}"
 
-    year_matches = [int(x) for x in re.findall(r"(\d+)\+?\s+years?", text)]
-    required_years = max(year_matches) if year_matches else 0
+    target_roles = [str(x).lower() for x in (profile.get("target_roles") or [])]
+    resume_text = (profile.get("resume_text") or "").lower()
 
-    hard_fail = False
-    verification_gap = False
+    # Explicit occupational families for the user's stated targets.
+    target_terms = {
+        "organizational development": [
+            "organizational development", "organization development", "od consultant",
+            "organizational effectiveness", "organization effectiveness"
+        ],
+        "change management": [
+            "change management", "change consultant", "organizational change",
+            "change transformation", "change strategy"
+        ],
+        "people strategy": [
+            "people strategy", "people consulting", "people advisory",
+            "workforce strategy", "talent strategy", "human capital"
+        ],
+        "management consulting": [
+            "management consulting", "management consultant", "strategy consulting",
+            "strategy consultant", "business consulting", "advisory consultant"
+        ],
+    }
 
-    if required_years and actual_years < required_years:
-        hard_fail = True
-        reasons.append(
-            f"Experience gap: posting appears to require {required_years}+ years; "
-            f"your profile shows {actual_years}+."
-        )
+    # Strong exclusion families. A job dominated by these areas should not
+    # receive a high fit score merely because it shares generic consulting terms.
+    exclusion_terms = {
+        "cybersecurity": ["cybersecurity", "cyber security", "penetration testing", "soc", "siem"],
+        "it audit": ["it audit", "information technology audit", "technology audit"],
+        "software engineering": ["software engineer", "software developer", "full stack", "backend engineer", "frontend engineer"],
+        "data science": ["data scientist", "machine learning engineer", "deep learning"],
+        "accounting": ["staff accountant", "tax accountant", "audit senior", "public accounting"],
+        "nursing": ["registered nurse", "rn ", "nurse practitioner"],
+        "physician": ["physician", "surgeon", "medical doctor"],
+        "legal": ["attorney", "lawyer", "paralegal"],
+        "sales": ["sales development representative", "account executive", "outside sales", "territory sales"],
+    }
 
-    senior_terms = ["senior consultant", "senior manager", "director", "principal", "lead consultant"]
-    if any(term in title for term in senior_terms) and actual_years < 5:
-        hard_fail = True
-        reasons.append("Seniority concern: this is a senior/leadership-level title relative to your experience.")
+    # Determine whether title/description contains a meaningful target-family signal.
+    family_hits = []
+    for family, terms in target_terms.items():
+        hits = [t for t in terms if t in text]
+        if hits:
+            family_hits.append((family, hits))
 
-    experience_language = [
-        "deep expertise", "extensive experience", "proven track record",
-        "expert in", "subject matter expert"
-    ]
-    if any(term in text for term in experience_language) and required_years == 0:
-        verification_gap = True
-        reasons.append(
-            "The posting asks for substantial expertise but gives no numeric experience threshold; "
-            "qualification cannot be fully verified from the available data."
-        )
+    exclusion_hits = []
+    for family, terms in exclusion_terms.items():
+        hits = [t for t in terms if t in text]
+        if hits:
+            exclusion_hits.append((family, hits))
 
-    role_hits = sum(1 for terms in ROLE_MAP.values() if any(term in text for term in terms))
-    role_score = min(100, role_hits * 20)
+    title_target_hits = []
+    for family, terms in target_terms.items():
+        hits = [t for t in terms if t in title]
+        if hits:
+            title_target_hits.extend(hits)
 
-    profile_skills = profile.get("skills", [])
-    skill_hits = sum(skill in text for skill in profile_skills)
-    skill_score = min(100, round(skill_hits / max(len(profile_skills), 1) * 100))
+    title_exclusion_hits = []
+    for family, terms in exclusion_terms.items():
+        hits = [t for t in terms if t in title]
+        if hits:
+            title_exclusion_hits.extend(hits)
 
-    exp_score = 100 if not required_years else min(100, round(actual_years / required_years * 100))
+    # A target-family title is the strongest signal. A target phrase only in a
+    # long description is weaker because postings often mention adjacent work.
+    if title_target_hits:
+        functional = 95
+    elif family_hits:
+        functional = 75
+    else:
+        functional = 15
 
-    score = round(
-        0.35 * (0 if hard_fail else 100)
-        + 0.25 * exp_score
-        + 0.25 * skill_score
-        + 0.15 * role_score
+    # Explicit wrong-family title is a hard relevance penalty.
+    hard_wrong_family = bool(title_exclusion_hits)
+    if hard_wrong_family:
+        functional = 0
+
+    # Resume skills/experience overlap.
+    profile_skills = set(
+        str(x).lower() for x in (profile.get("skills") or [])
+        if str(x).strip()
+    )
+    job_skills = set(
+        str(x).lower() for x in (job.get("skill_terms") or [])
+        if str(x).strip()
     )
 
-    if role_score:
-        reasons.append(f"Functional alignment: {role_score}%.")
-    if skill_score:
-        reasons.append(f"Skill alignment: {skill_score}%.")
-    if required_years:
-        reasons.append(
-            f"Experience check: {actual_years}+ years vs. approximately {required_years}+ in the posting."
-        )
+    overlap = 0
+    if job_skills:
+        overlap = int(100 * len(profile_skills & job_skills) / max(1, len(job_skills)))
 
-    if hard_fail:
-        status = "DO NOT APPLY"
-    elif verification_gap:
-        status = "REVIEW"
-    elif score >= 75:
-        status = "QUALIFIED"
-        reasons.append("No detected hard qualification failure.")
+    # Relevant experience terms, deliberately broad but only used after role fit.
+    experience_terms = [
+        "consulting", "organizational development", "change management",
+        "organizational effectiveness", "human resources", "human capital",
+        "talent", "learning", "development", "facilitation", "stakeholder",
+        "strategy", "culture", "dei", "diversity", "inclusion"
+    ]
+    exp_hits = sum(1 for t in experience_terms if t in resume_text and t in text)
+    experience_score = min(100, exp_hits * 12)
+
+    # Final score heavily weights occupational relevance.
+    score = int(round(functional * 0.65 + overlap * 0.15 + experience_score * 0.20))
+    score = max(0, min(100, score))
+
+    reasons = [
+        f"Functional alignment: {functional}%.",
+        f"Skill alignment: {overlap}%.",
+        f"Relevant experience signal: {experience_score}%.",
+    ]
+
+    if title_target_hits:
+        reasons.append("Target role family appears directly in the job title.")
+    elif family_hits:
+        reasons.append("Target role family appears in the job description.")
     else:
+        reasons.append("No strong target-role-family signal was found.")
+
+    if hard_wrong_family:
+        reasons.append("Job title indicates a different occupational family; do not prioritize.")
+    if exclusion_hits:
+        reasons.append("Adjacent/unrelated specialty detected: " + ", ".join(x[0] for x in exclusion_hits))
+
+    # Status is intentionally stricter than the numeric score.
+    if hard_wrong_family:
+        status = "DO_NOT_APPLY"
+    elif functional < 50:
+        status = "DO_NOT_APPLY"
+    elif score >= 80:
+        status = "QUALIFIED"
+    elif score >= 65:
         status = "REVIEW"
+    else:
+        status = "DO_NOT_APPLY"
 
     return {
-        "score": max(0, min(100, score)),
-        "qualified": status == "QUALIFIED",
+        "score": score,
         "status": status,
         "reasons": reasons,
+        "functional_alignment": functional,
+        "skill_alignment": overlap,
     }
-
-def _status(requirement, profile, text):
-    r = requirement.lower()
-    years = profile.get("years_experience", 0)
-    skills = " ".join(profile.get("skills", [])).lower()
-    roles = " ".join(profile.get("roles", [])).lower()
-    resume = profile.get("resume_text", "").lower()
-
-    nums = re.findall(r"(\d+)\+?\s+years?", r)
-    if nums:
-        needed = int(nums[0])
-        if years >= needed:
-            return "MEETS", f"Your profile indicates {years}+ years of experience."
-        return "MISSING", f"Your profile indicates {years}+ years, below the stated {needed}+ years."
-
-    if "bachelor" in r or "b.s." in r:
-        if profile.get("degree"):
-            return "MEETS", "A bachelor's degree is represented in the resume."
-        return "MISSING", "No bachelor's degree was detected in the resume."
-
-    terms = {
-        "organizational development": ["organizational development", "organizational effectiveness"],
-        "change management": ["change management"],
-        "human resources": ["human resources", "hr"],
-        "consulting": ["consulting", "consultant", "advisory"],
-        "stakeholder": ["stakeholder"],
-        "facilitation": ["facilitation", "facilitating", "workshop"],
-        "project management": ["project management", "program management"],
-        "qualitative": ["qualitative", "thematic", "interviews", "focus groups"],
-    }
-
-    for label, variants in terms.items():
-        if label in r or any(v in r for v in variants):
-            if any(v in resume or v in skills or v in roles for v in variants):
-                return "MEETS", f"Relevant evidence was detected for {label}."
-            return "MISSING", f"No clear resume evidence was detected for {label}."
-
-    if any(x in r for x in ["deep expertise", "extensive experience", "proven track record", "expert"]):
-        return "CANNOT_VERIFY", "The posting asks for substantial expertise, but the available resume/profile data cannot verify the depth required."
-
-    return "CANNOT_VERIFY", "This requirement needs semantic review of the full resume and posting."
 
 def requirement_matrix(profile, job):
     text = clean_html(job.get("description", ""))

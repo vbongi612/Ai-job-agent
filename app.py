@@ -181,7 +181,15 @@ else:
             reverse=True
         )
 
-        displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
+        # Never show a clearly wrong occupational family just because its
+        # generic skills overlap with the resume.
+        relevant = [
+            x for x in scored
+            if x[0].get("status") != "DO_NOT_APPLY"
+            and x[0].get("functional_alignment", 0) >= 50
+            and x[0]["score"] >= min_score
+        ]
+        displayed = relevant[:max_results]
         st.session_state.jobs = [j for _, j in displayed]
         st.session_state.search_complete = True
 
@@ -206,7 +214,7 @@ else:
                     }
 
         st.success(
-            f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold."
+            f"Analyzed {len(scored)} live listings; showing {len(displayed)} genuinely relevant jobs above your threshold."
         )
 
     # Results persist across reruns because they are in session state.
