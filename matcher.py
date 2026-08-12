@@ -71,96 +71,74 @@ def _text(job):
     ]).lower()
 
 
-def score_job(profile, job):
-    """
-    Conservative role-fit scorer.
 
-    The previous version rewarded broad skill overlap, which could let unrelated
-    jobs (e.g. cybersecurity/audit) through. This version first establishes
-    whether the job belongs to the user's target occupational family, then
-    scores skills/experience only inside that relevant family.
+def score_job(profile, job, target_roles=None):
+    """
+    Target-role-driven matcher.
+
+    target_roles comes directly from the app's Target roles field. The matcher
+    treats those phrases as the primary occupational relevance signal and does
+    not assume a fixed career family.
     """
     title = (job.get("title") or "").lower()
     desc = (job.get("description") or "").lower()
     text = f"{title} {desc}"
 
-    target_roles = [str(x).lower() for x in (profile.get("target_roles") or [])]
-    resume_text = (profile.get("resume_text") or "").lower()
+    # The UI is the source of truth for what the user wants to find.
+    requested_roles = [
+        str(x).strip().lower()
+        for x in (target_roles or [])
+        if str(x).strip()
+    ]
 
-    # Explicit occupational families for the user's stated targets.
-    target_terms = {
-        "organizational development": [
-            "organizational development", "organization development", "od consultant",
-            "organizational effectiveness", "organization effectiveness"
-        ],
-        "change management": [
-            "change management", "change consultant", "organizational change",
-            "change transformation", "change strategy"
-        ],
-        "people strategy": [
-            "people strategy", "people consulting", "people advisory",
-            "workforce strategy", "talent strategy", "human capital"
-        ],
-        "management consulting": [
-            "management consulting", "management consultant", "strategy consulting",
-            "strategy consultant", "business consulting", "advisory consultant"
-        ],
-    }
+    # Match exact/near phrase signals from the target-role field.
+    role_hits = []
+    title_role_hits = []
+    for role in requested_roles:
+        # Full phrase match is strongest.
+        if role in text:
+            role_hits.append(role)
+        if role in title:
+            title_role_hits.append(role)
+            continue
 
-    # Strong exclusion families. A job dominated by these areas should not
-    # receive a high fit score merely because it shares generic consulting terms.
-    exclusion_terms = {
-        "cybersecurity": ["cybersecurity", "cyber security", "penetration testing", "soc", "siem"],
-        "it audit": ["it audit", "information technology audit", "technology audit"],
-        "software engineering": ["software engineer", "software developer", "full stack", "backend engineer", "frontend engineer"],
-        "data science": ["data scientist", "machine learning engineer", "deep learning"],
-        "accounting": ["staff accountant", "tax accountant", "audit senior", "public accounting"],
-        "nursing": ["registered nurse", "rn ", "nurse practitioner"],
-        "physician": ["physician", "surgeon", "medical doctor"],
-        "legal": ["attorney", "lawyer", "paralegal"],
-        "sales": ["sales development representative", "account executive", "outside sales", "territory sales"],
-    }
+        # For multi-word role phrases, allow a title to contain most
+        # meaningful words while avoiding generic filler terms.
+        words = [
+            w for w in re.findall(r"[a-z0-9]+", role)
+            if w not in {"and", "or", "the", "of", "for", "in", "to"}
+            and len(w) >= 3
+        ]
+        if len(words) >= 2:
+            title_words = set(re.findall(r"[a-z0-9]+", title))
+            hits = sum(1 for w in words if w in title_words)
+            if hits >= max(2, int(len(words) * 0.67)):
+                title_role_hits.append(role)
 
-    # Determine whether title/description contains a meaningful target-family signal.
-    family_hits = []
-    for family, terms in target_terms.items():
-        hits = [t for t in terms if t in text]
-        if hits:
-            family_hits.append((family, hits))
-
-    exclusion_hits = []
-    for family, terms in exclusion_terms.items():
-        hits = [t for t in terms if t in text]
-        if hits:
-            exclusion_hits.append((family, hits))
-
-    title_target_hits = []
-    for family, terms in target_terms.items():
-        hits = [t for t in terms if t in title]
-        if hits:
-            title_target_hits.extend(hits)
-
-    title_exclusion_hits = []
-    for family, terms in exclusion_terms.items():
-        hits = [t for t in terms if t in title]
-        if hits:
-            title_exclusion_hits.extend(hits)
-
-    # A target-family title is the strongest signal. A target phrase only in a
-    # long description is weaker because postings often mention adjacent work.
-    if title_target_hits:
-        functional = 95
-    elif family_hits:
-        functional = 75
+    # If the user entered roles, relevance is driven by those roles.
+    # Title matches are strongest, body matches are meaningful but weaker.
+    if title_role_hits:
+        functional = 100
+    elif role_hits:
+        functional = 80
+    elif requested_roles:
+        # Give a small amount of credit only for broad semantic overlap,
+        # based on individual meaningful words from the requested roles.
+        meaningful = set()
+        for role in requested_roles:
+            meaningful.update(
+                w for w in re.findall(r"[a-z0-9]+", role)
+                if w not in {"and", "or", "the", "of", "for", "in", "to"}
+                and len(w) >= 4
+            )
+        text_words = set(re.findall(r"[a-z0-9]+", text))
+        word_hits = len(meaningful & text_words)
+        functional = min(55, word_hits * 12)
     else:
-        functional = 15
-
-    # Explicit wrong-family title is a hard relevance penalty.
-    hard_wrong_family = bool(title_exclusion_hits)
-    if hard_wrong_family:
+        # No target roles: do not invent a career direction.
         functional = 0
 
-    # Resume skills/experience overlap.
+    # Skill overlap is secondary to role relevance.
     profile_skills = set(
         str(x).lower() for x in (profile.get("skills") or [])
         if str(x).strip()
@@ -169,12 +147,9 @@ def score_job(profile, job):
         str(x).lower() for x in (job.get("skill_terms") or [])
         if str(x).strip()
     )
+    overlap = int(100 * len(profile_skills & job_skills) / max(1, len(job_skills))) if job_skills else 0
 
-    overlap = 0
-    if job_skills:
-        overlap = int(100 * len(profile_skills & job_skills) / max(1, len(job_skills)))
-
-    # Relevant experience terms, deliberately broad but only used after role fit.
+    resume_text = (profile.get("resume_text") or "").lower()
     experience_terms = [
         "consulting", "organizational development", "change management",
         "organizational effectiveness", "human resources", "human capital",
@@ -184,36 +159,32 @@ def score_job(profile, job):
     exp_hits = sum(1 for t in experience_terms if t in resume_text and t in text)
     experience_score = min(100, exp_hits * 12)
 
-    # Final score heavily weights occupational relevance.
-    score = int(round(functional * 0.65 + overlap * 0.15 + experience_score * 0.20))
+    score = int(round(functional * 0.70 + overlap * 0.12 + experience_score * 0.18))
     score = max(0, min(100, score))
 
     reasons = [
-        f"Functional alignment: {functional}%.",
+        f"Target-role alignment: {functional}%.",
         f"Skill alignment: {overlap}%.",
         f"Relevant experience signal: {experience_score}%.",
     ]
 
-    if title_target_hits:
-        reasons.append("Target role family appears directly in the job title.")
-    elif family_hits:
-        reasons.append("Target role family appears in the job description.")
+    if title_role_hits:
+        reasons.append("Target role phrase appears in the job title: " + ", ".join(title_role_hits))
+    elif role_hits:
+        reasons.append("Target role phrase appears in the job description: " + ", ".join(role_hits))
+    elif requested_roles:
+        reasons.append("No strong direct target-role phrase match was found.")
     else:
-        reasons.append("No strong target-role-family signal was found.")
+        reasons.append("No target roles were entered.")
 
-    if hard_wrong_family:
-        reasons.append("Job title indicates a different occupational family; do not prioritize.")
-    if exclusion_hits:
-        reasons.append("Adjacent/unrelated specialty detected: " + ", ".join(x[0] for x in exclusion_hits))
-
-    # Status is intentionally stricter than the numeric score.
-    if hard_wrong_family:
-        status = "DO_NOT_APPLY"
-    elif functional < 50:
-        status = "DO_NOT_APPLY"
-    elif score >= 80:
-        status = "QUALIFIED"
-    elif score >= 65:
+    # A job must have a meaningful target-role relationship to be surfaced.
+    if not requested_roles:
+        status = "REVIEW" if score >= 65 else "DO_NOT_APPLY"
+    elif title_role_hits:
+        status = "QUALIFIED" if score >= 75 else "REVIEW"
+    elif role_hits:
+        status = "QUALIFIED" if score >= 80 else "REVIEW"
+    elif functional >= 50:
         status = "REVIEW"
     else:
         status = "DO_NOT_APPLY"

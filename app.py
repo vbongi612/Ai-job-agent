@@ -46,6 +46,7 @@ for key, default in {
     "jobs": [],
     "search_complete": False,
     "ai_results": {},
+    "target_roles": [],
 }.items():
     if key not in st.session_state or (st.session_state[key] is None and saved.get(key) is not None):
         st.session_state[key] = default
@@ -57,6 +58,7 @@ st.caption("Live jobs → qualification screening → AI requirement analysis")
 
 with st.sidebar:
     st.header("Job criteria")
+    st.caption("Target roles determine the relevance component of the score. Minimum match score is the only display threshold.")
     roles_text = st.text_area(
         "Target roles",
         "Organizational Development\nChange Management\nPeople Strategy\nManagement Consulting"
@@ -135,6 +137,7 @@ if not st.session_state.profile:
 else:
     if st.button("🔎 Find live jobs", type="primary"):
         role_queries = [x.strip() for x in roles_text.splitlines() if x.strip()]
+        st.session_state.target_roles = role_queries
         jobs = []
         errors = []
 
@@ -170,7 +173,7 @@ else:
         for job in jobs:
             if job.get("salary_min") and job["salary_min"] < min_salary:
                 continue
-            scored.append((score_job(st.session_state.profile, job), job))
+            scored.append((score_job(st.session_state.profile, job, role_queries), job))
 
         scored.sort(
             key=lambda x: (
@@ -183,13 +186,12 @@ else:
 
         # Never show a clearly wrong occupational family just because its
         # generic skills overlap with the resume.
-        relevant = [
+        # The Minimum match score is the single score threshold.
+        # Target roles affect the score itself; there is no hidden second cutoff.
+        displayed = [
             x for x in scored
-            if x[0].get("status") != "DO_NOT_APPLY"
-            and x[0].get("functional_alignment", 0) >= 50
-            and x[0]["score"] >= min_score
-        ]
-        displayed = relevant[:max_results]
+            if x[0]["score"] >= min_score
+        ][:max_results]
         st.session_state.jobs = [j for _, j in displayed]
         st.session_state.search_complete = True
 
@@ -221,7 +223,7 @@ else:
     if st.session_state.get("search_complete"):
         displayed = []
         for job in st.session_state.jobs:
-            displayed.append((score_job(st.session_state.profile, job), job))
+            displayed.append((score_job(st.session_state.profile, job, st.session_state.target_roles), job))
 
         for idx, (result, job) in enumerate(displayed):
             with st.container(border=True):
@@ -238,12 +240,26 @@ else:
                     st.metric("Match", f"{result['score']}%")
 
                 status = result["status"]
+                score = result["score"]
+                if score >= 90:
+                    band = "Excellent match"
+                elif score >= 80:
+                    band = "Strong match"
+                elif score >= 70:
+                    band = "Good match"
+                elif score >= 60:
+                    band = "Possible match"
+                else:
+                    band = "Weak match"
+
+                st.caption(f"Match band: **{band}**")
+
                 if status == "QUALIFIED":
                     st.success("QUALIFIED — worth applying")
                 elif status == "REVIEW":
                     st.warning("REVIEW — relevant, but qualification is not fully verified")
                 else:
-                    st.error("DO NOT APPLY")
+                    st.error("DO NOT APPLY — score meets your threshold, but a qualification/relevance issue was detected")
 
                 description = clean_html(job.get("description", ""))
                 if description:
