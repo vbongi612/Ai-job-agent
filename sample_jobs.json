@@ -1,0 +1,44 @@
+[
+  {
+    "id": "job_001",
+    "title": "Associate Consultant, Organizational Effectiveness",
+    "company": "Example Consulting Group",
+    "location": "Chicago, IL",
+    "employment_type": "Full-time",
+    "salary_min": 70000,
+    "description": "Support organizational effectiveness and change initiatives, analyze employee feedback, prepare executive presentations, and manage client workstreams.",
+    "min_years_experience": 2,
+    "required_degree": "Bachelor's",
+    "required": ["Bachelor's degree", "2+ years experience"],
+    "role_terms": ["organizational development", "consulting", "change management"],
+    "skill_terms": ["stakeholder management", "employee listening", "executive reporting", "project management", "qualitative coding"]
+  },
+  {
+    "id": "job_002",
+    "title": "Senior Consultant, People Strategy",
+    "company": "Example Strategy Partners",
+    "location": "Chicago, IL",
+    "employment_type": "Full-time",
+    "salary_min": 95000,
+    "description": "Lead large people-strategy engagements and supervise consulting teams while advising senior executives.",
+    "min_years_experience": 6,
+    "required_degree": "Bachelor's",
+    "required": ["Bachelor's degree", "6+ years experience"],
+    "role_terms": ["people strategy", "consulting", "organizational development"],
+    "skill_terms": ["stakeholder management", "executive reporting", "project management", "facilitation"]
+  },
+  {
+    "id": "job_003",
+    "title": "Change Management Analyst",
+    "company": "Example Transformation Co.",
+    "location": "Remote",
+    "employment_type": "Full-time",
+    "salary_min": 65000,
+    "description": "Analyze organizational change data, support stakeholder communications, and develop change-management deliverables.",
+    "min_years_experience": 1,
+    "required_degree": "Bachelor's",
+    "required": ["Bachelor's degree", "1+ years experience"],
+    "role_terms": ["change management", "consulting"],
+    "skill_terms": ["stakeholder management", "qualitative coding", "executive reporting", "project management"]
+  }
+]
