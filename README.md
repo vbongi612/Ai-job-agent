@@ -1,12 +1,8 @@
-# AI Job Agent v2
+# AI Job Agent v3
 
-Live job search with conservative qualification screening.
+Fixes the live-job display so provider HTML is converted to readable text.
 
-Changes:
-- Cleans HTML from job descriptions.
-- Separates QUALIFIED / REVIEW / DO NOT APPLY.
-- Treats senior titles and vague expertise requirements conservatively.
-- Uses live remote listings via Himalayas.
-- Supports Chicago listings via Adzuna when credentials are stored in Streamlit Secrets.
+Current flow:
+Resume -> live jobs -> qualification screening -> QUALIFIED / REVIEW / DO NOT APPLY.
 
-Do not commit API keys to GitHub.
+Remote search uses Himalayas. Chicago search uses Adzuna when credentials are added to Streamlit Secrets.

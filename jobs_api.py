@@ -48,8 +48,7 @@ def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
 
     if not app_id or not app_key:
         raise RuntimeError(
-            "Chicago live search needs Adzuna credentials. "
-            "Remote search does not require this key."
+            "Chicago live search needs Adzuna credentials. Remote search does not require this key."
         )
 
     params = {

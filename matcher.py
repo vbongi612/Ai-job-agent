@@ -28,6 +28,7 @@ def clean_html(text):
     text = html.unescape(text)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
     text = re.sub(r"</p\s*>", "\n", text, flags=re.I)
+    text = re.sub(r"</li\s*>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n", text)
@@ -75,46 +76,36 @@ def score_job(profile, job):
 
     actual_years = profile.get("years_experience", 0)
 
-    # Explicit numeric experience requirements.
     year_matches = [int(x) for x in re.findall(r"(\d+)\+?\s+years?", text)]
     required_years = max(year_matches) if year_matches else 0
 
     hard_fail = False
     verification_gap = False
 
-    if required_years >= 5 and actual_years < required_years:
-        hard_fail = True
-        reasons.append(
-            f"Hard experience gap: posting appears to require {required_years}+ years; "
-            f"your profile shows {actual_years}+."
-        )
-    elif required_years and actual_years < required_years:
+    if required_years and actual_years < required_years:
         hard_fail = True
         reasons.append(
             f"Experience gap: posting appears to require {required_years}+ years; "
             f"your profile shows {actual_years}+."
         )
 
-    # "Senior" / "Director" roles are not treated as automatically qualified.
     senior_terms = ["senior consultant", "senior manager", "director", "principal", "lead consultant"]
     if any(term in title for term in senior_terms) and actual_years < 5:
         hard_fail = True
         reasons.append("Seniority concern: this is a senior/leadership-level title relative to your experience.")
 
-    # Language such as "deep expertise" is a verification gap, not proof of qualification.
     experience_language = [
         "deep expertise", "extensive experience", "proven track record",
         "expert in", "subject matter expert"
     ]
     if any(term in text for term in experience_language) and required_years == 0:
         verification_gap = True
-        reasons.append("The posting asks for substantial expertise but gives no numeric experience threshold; qualification cannot be fully verified.")
+        reasons.append(
+            "The posting asks for substantial expertise but gives no numeric experience threshold; "
+            "qualification cannot be fully verified from the available data."
+        )
 
-    role_hits = 0
-    for terms in ROLE_MAP.values():
-        if any(term in text for term in terms):
-            role_hits += 1
-
+    role_hits = sum(1 for terms in ROLE_MAP.values() if any(term in text for term in terms))
     role_score = min(100, role_hits * 20)
 
     profile_skills = profile.get("skills", [])

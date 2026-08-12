@@ -2,7 +2,7 @@
 import streamlit as st
 from pypdf import PdfReader
 
-from matcher import normalize_profile, score_job
+from matcher import normalize_profile, score_job, clean_html
 from jobs_api import search_himalayas, search_adzuna
 
 st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
@@ -101,7 +101,9 @@ else:
             )
 
             displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
-            st.success(f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold.")
+            st.success(
+                f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold."
+            )
 
             for result, job in displayed:
                 with st.container(border=True):
@@ -126,7 +128,11 @@ else:
                     else:
                         st.error("DO NOT APPLY")
 
-                    st.write(job.get("description", ""))
+                    # Display cleaned job description instead of provider HTML.
+                    description = clean_html(job.get("description", ""))
+                    if description:
+                        st.markdown("**Job description**")
+                        st.write(description)
 
                     st.markdown("**Screening analysis**")
                     for reason in result["reasons"]:
@@ -139,6 +145,4 @@ else:
                         st.link_button("View / Apply", job["url"])
 
 st.divider()
-st.caption(
-    "The app screens live listings conservatively. It does not submit applications automatically."
-)
+st.caption("Live listings are screened conservatively. Applications are not submitted automatically.")
