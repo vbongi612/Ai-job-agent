@@ -4,6 +4,7 @@ from pypdf import PdfReader
 
 from matcher import normalize_profile, score_job, clean_html, requirement_matrix
 from jobs_api import search_himalayas, search_adzuna, test_adzuna
+from ai_screen import ai_screen_job
 
 st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
 st.title("💼 AI Job Agent")
@@ -27,6 +28,7 @@ with st.sidebar:
     min_salary = st.number_input("Minimum salary ($)", min_value=0, value=60000, step=5000)
     min_score = st.slider("Minimum match score", 50, 100, 80)
     max_results = st.slider("Maximum jobs to analyze", 10, 50, 20)
+    use_ai = st.checkbox("Use AI qualification analysis", value=True)
 
 st.subheader("1. Resume")
 uploaded = st.file_uploader("Upload your resume PDF", type=["pdf"])
@@ -156,6 +158,51 @@ else:
                                     st.error(f"❌ **NOT DEMONSTRATED** — {req['requirement']}\n\n{req['evidence']}")
                                 else:
                                     st.info(f"❓ **CANNOT VERIFY** — {req['requirement']}\n\n{req['evidence']}")
+
+                    if use_ai:
+                        with st.expander("🤖 AI qualification analysis"):
+                            if st.button("Analyze this job with AI", key=f"ai_{idx}"):
+                                with st.spinner("Comparing the full resume with the full job posting..."):
+                                    ai_result = ai_screen_job(
+                                        st.session_state.profile.get("resume_text", ""),
+                                        job
+                                    )
+
+                                if not ai_result:
+                                    st.error(
+                                        "AI analysis could not run. Add OPENAI_API_KEY to Streamlit Secrets "
+                                        "and make sure the API key has access to the selected model."
+                                    )
+                                else:
+                                    recommendation = ai_result.get("recommendation", "REVIEW")
+                                    if recommendation == "APPLY":
+                                        st.success("🤖 AI RECOMMENDATION: APPLY")
+                                    elif recommendation == "REVIEW":
+                                        st.warning("🤖 AI RECOMMENDATION: REVIEW")
+                                    else:
+                                        st.error("🤖 AI RECOMMENDATION: DO NOT APPLY")
+
+                                    st.write(ai_result.get("summary", ""))
+
+                                    if ai_result.get("hard_failures"):
+                                        st.markdown("**Hard qualification issues**")
+                                        for item in ai_result["hard_failures"]:
+                                            st.error(item)
+
+                                    st.markdown("**AI requirement checks**")
+                                    for item in ai_result.get("requirements", []):
+                                        s = item.get("status", "CANNOT_VERIFY")
+                                        icon = {
+                                            "MEETS": "✅",
+                                            "PARTIAL": "🟡",
+                                            "MISSING": "❌",
+                                            "CANNOT_VERIFY": "❓"
+                                        }.get(s, "❓")
+                                        st.write(
+                                            f"{icon} **{s}** — {item.get('requirement', '')}"
+                                        )
+                                        if item.get("evidence"):
+                                            st.caption(item["evidence"])
 
                     if job.get("salary"):
                         st.write(f"**Salary:** {job['salary']}")

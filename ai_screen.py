@@ -1,18 +1,33 @@
 
 import json
 import os
+import re
 
-def _get_key():
-    key = os.getenv("OPENAI_API_KEY")
+def _secret(name):
+    value = os.getenv(name)
     try:
         import streamlit as st
-        key = key or st.secrets.get("OPENAI_API_KEY")
+        if not value and name in st.secrets:
+            value = st.secrets[name]
     except Exception:
         pass
-    return key
+    return str(value).strip() if value is not None else ""
 
-def ai_screen_job(profile, job):
-    key = _get_key()
+def _extract_json(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except Exception:
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if match:
+            return json.loads(match.group(0))
+    return None
+
+def ai_screen_job(resume_text, job):
+    key = _secret("OPENAI_API_KEY")
     if not key:
         return None
 
@@ -22,48 +37,65 @@ def ai_screen_job(profile, job):
         return None
 
     client = OpenAI(api_key=key)
+    model = _secret("OPENAI_MODEL") or "gpt-5.6"
 
-    resume = profile.get("resume_text", "")
-    description = job.get("description", "")
+    description = job.get("description", "") or ""
+    title = job.get("title", "")
+    company = job.get("company", "")
+    location = job.get("location", "")
 
     prompt = f"""
-You are a conservative job-qualification screening engine.
+You are a conservative job-qualification engine for a real job seeker.
 
-Compare the candidate resume against the complete job posting.
-Do NOT infer qualifications that are not supported by the resume.
-Do NOT treat keyword overlap as proof of experience.
-A requirement is:
-- MEETS only when the resume clearly supports it.
-- PARTIAL when related evidence exists but the exact requirement is not fully demonstrated.
-- MISSING when the resume conflicts with or lacks a required qualification.
-- CANNOT_VERIFY when the wording is subjective or the available posting/resume does not allow a reliable determination.
+Your job is NOT to make the candidate look better than the evidence supports.
+Compare the candidate's resume against the complete job posting.
 
-Return ONLY valid JSON with this structure:
+Rules:
+1. Separate REQUIRED/MUST-HAVE qualifications from PREFERRED qualifications whenever the posting allows it.
+2. MEETS means the resume clearly demonstrates the requirement.
+3. PARTIAL means related experience exists, but the exact requirement is not fully demonstrated.
+4. MISSING means the resume clearly lacks a stated required qualification or contradicts it.
+5. CANNOT_VERIFY means the requirement is subjective or the posting/resume does not contain enough evidence.
+6. Do not infer years of experience from job seniority alone.
+7. Do not convert a general skill into specialized expertise unless the resume supports the specialization.
+8. If a required degree, certification, license, location, work authorization, or numeric experience requirement is absent or contradicted, flag it.
+9. If the job asks for "deep expertise", "extensive experience", "expert", "proven track record", etc., do not automatically treat ordinary exposure as MEETS.
+10. A candidate can receive APPLY only when there is no important unverified or missing required qualification.
+11. If an important requirement cannot be verified, prefer REVIEW.
+12. DO_NOT_APPLY is appropriate when a hard requirement is clearly missing.
+
+Return ONLY JSON in this exact shape:
 {{
   "recommendation": "APPLY" | "REVIEW" | "DO_NOT_APPLY",
-  "summary": "brief explanation",
+  "summary": "2-4 sentence explanation",
+  "hard_failures": ["..."],
   "requirements": [
     {{
-      "requirement": "specific requirement",
+      "requirement": "specific requirement from the posting",
+      "importance": "REQUIRED" | "PREFERRED" | "UNCLEAR",
       "status": "MEETS" | "PARTIAL" | "MISSING" | "CANNOT_VERIFY",
-      "evidence": "resume evidence or explanation"
+      "evidence": "specific evidence from the resume, or why it cannot be verified"
     }}
   ]
 }}
 
-CANDIDATE RESUME:
-{resume}
+JOB:
+Title: {title}
+Company: {company}
+Location: {location}
 
-JOB POSTING:
+JOB DESCRIPTION:
 {description}
+
+CANDIDATE RESUME:
+{resume_text}
 """
 
     try:
         response = client.responses.create(
-            model="gpt-5.6",
-            input=prompt
+            model=model,
+            input=prompt,
         )
-        text = response.output_text.strip()
-        return json.loads(text)
+        return _extract_json(response.output_text)
     except Exception:
         return None

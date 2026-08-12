@@ -1,9 +1,16 @@
-# AI Job Agent v6
+# AI Job Agent v7
 
-Chicago search fix:
-- Searches each target role separately instead of using one OR query.
-- Uses Adzuna's documented keyword + location search pattern.
-- Retries without optional full-time/permanent filters if a restrictive query returns no results.
-- Keeps salary filtering and requirement screening.
+Adds the real AI qualification layer on top of the working v6 Chicago/Adzuna search.
 
-Adzuna credentials remain in Streamlit Secrets only.
+The AI:
+- compares the complete resume with the complete job posting;
+- separates required vs preferred qualifications where possible;
+- uses MEETS / PARTIAL / MISSING / CANNOT_VERIFY;
+- flags hard failures;
+- returns APPLY / REVIEW / DO_NOT_APPLY conservatively.
+
+Streamlit Secrets:
+OPENAI_API_KEY = "..."
+OPENAI_MODEL = "gpt-5.6"  # optional
+
+Never put API keys in GitHub.
