@@ -1,6 +1,6 @@
-import re
 
-# The matcher is intentionally conservative: hard gaps are not rescued by keyword similarity.
+import re
+import html
 
 ROLE_MAP = {
     "organizational development": [
@@ -15,23 +15,31 @@ ROLE_MAP = {
 
 SKILLS = [
     "stakeholder management", "stakeholder engagement",
-    "employee listening", "employee engagement", "survey",
-    "surveys", "interviews", "focus groups", "qualitative",
-    "thematic analysis", "qualitative coding", "executive reporting",
-    "executive presentation", "project management", "program management",
-    "facilitation", "workshop", "excel", "powerpoint"
+    "employee listening", "employee engagement", "survey", "surveys",
+    "interviews", "focus groups", "qualitative", "thematic analysis",
+    "qualitative coding", "executive reporting", "executive presentation",
+    "project management", "program management", "facilitation",
+    "workshop", "excel", "powerpoint"
 ]
 
+def clean_html(text):
+    if not text:
+        return ""
+    text = html.unescape(text)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"</p\s*>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
 
 def normalize_profile(text):
     t = text.lower()
 
     years = 0
-    m = re.search(r"(\d+)\+?\s*years?\s+(?:of\s+)?experience", t)
-    if m:
-        years = int(m.group(1))
-
-    # Resume-specific fallback: the uploaded resume states "3+ years of experience".
+    matches = re.findall(r"(\d+)\+?\s*years?\s+(?:of\s+)?experience", t)
+    if matches:
+        years = max(map(int, matches))
     if "3+ years of experience" in t:
         years = max(years, 3)
 
@@ -49,57 +57,76 @@ def normalize_profile(text):
         "degree": degree,
         "roles": roles,
         "skills": skills,
-        "raw_resume_text": text,
     }
 
-
 def _text(job):
+    description = clean_html(job.get("description", ""))
     return " ".join([
         str(job.get("title", "")),
-        str(job.get("description", "")),
+        description,
         " ".join(map(str, job.get("role_terms", []))),
         " ".join(map(str, job.get("skill_terms", []))),
     ]).lower()
 
-
 def score_job(profile, job):
     text = _text(job)
+    title = str(job.get("title", "")).lower()
     reasons = []
 
     actual_years = profile.get("years_experience", 0)
 
-    # Conservative extraction of explicit years from the posting.
-    year_matches = [
-        int(x) for x in re.findall(r"(\d+)\+?\s+years?", text)
-    ]
+    # Explicit numeric experience requirements.
+    year_matches = [int(x) for x in re.findall(r"(\d+)\+?\s+years?", text)]
     required_years = max(year_matches) if year_matches else 0
 
     hard_fail = False
+    verification_gap = False
+
     if required_years >= 5 and actual_years < required_years:
         hard_fail = True
         reasons.append(
             f"Hard experience gap: posting appears to require {required_years}+ years; "
             f"your profile shows {actual_years}+."
         )
+    elif required_years and actual_years < required_years:
+        hard_fail = True
+        reasons.append(
+            f"Experience gap: posting appears to require {required_years}+ years; "
+            f"your profile shows {actual_years}+."
+        )
+
+    # "Senior" / "Director" roles are not treated as automatically qualified.
+    senior_terms = ["senior consultant", "senior manager", "director", "principal", "lead consultant"]
+    if any(term in title for term in senior_terms) and actual_years < 5:
+        hard_fail = True
+        reasons.append("Seniority concern: this is a senior/leadership-level title relative to your experience.")
+
+    # Language such as "deep expertise" is a verification gap, not proof of qualification.
+    experience_language = [
+        "deep expertise", "extensive experience", "proven track record",
+        "expert in", "subject matter expert"
+    ]
+    if any(term in text for term in experience_language) and required_years == 0:
+        verification_gap = True
+        reasons.append("The posting asks for substantial expertise but gives no numeric experience threshold; qualification cannot be fully verified.")
 
     role_hits = 0
     for terms in ROLE_MAP.values():
         if any(term in text for term in terms):
-            if any(term in text for term in terms):
-                role_hits += 1
+            role_hits += 1
 
     role_score = min(100, role_hits * 20)
 
-    skill_hits = sum(skill in text for skill in profile.get("skills", []))
-    skill_score = min(100, round(skill_hits / max(len(profile.get("skills", [])), 1) * 100))
+    profile_skills = profile.get("skills", [])
+    skill_hits = sum(skill in text for skill in profile_skills)
+    skill_score = min(100, round(skill_hits / max(len(profile_skills), 1) * 100))
 
     exp_score = 100 if not required_years else min(100, round(actual_years / required_years * 100))
 
-    # Stronger weight on direct functional/experience alignment.
     score = round(
-        0.40 * (0 if hard_fail else 100)
+        0.35 * (0 if hard_fail else 100)
         + 0.25 * exp_score
-        + 0.20 * skill_score
+        + 0.25 * skill_score
         + 0.15 * role_score
     )
 
@@ -108,19 +135,23 @@ def score_job(profile, job):
     if skill_score:
         reasons.append(f"Skill alignment: {skill_score}%.")
     if required_years:
-        reasons.append(f"Experience check: {actual_years}+ years vs. approximately {required_years}+ in the posting.")
-    else:
-        reasons.append("No explicit minimum-years requirement was detected.")
+        reasons.append(
+            f"Experience check: {actual_years}+ years vs. approximately {required_years}+ in the posting."
+        )
 
-    qualified = (not hard_fail) and score >= 70
-
-    if qualified:
+    if hard_fail:
+        status = "DO NOT APPLY"
+    elif verification_gap:
+        status = "REVIEW"
+    elif score >= 75:
+        status = "QUALIFIED"
         reasons.append("No detected hard qualification failure.")
     else:
-        reasons.append("Recommendation is conservative: review before applying.")
+        status = "REVIEW"
 
     return {
         "score": max(0, min(100, score)),
-        "qualified": qualified,
+        "qualified": status == "QUALIFIED",
+        "status": status,
         "reasons": reasons,
     }

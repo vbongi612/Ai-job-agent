@@ -1,3 +1,4 @@
+
 import streamlit as st
 from pypdf import PdfReader
 
@@ -6,7 +7,7 @@ from jobs_api import search_himalayas, search_adzuna
 
 st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
 st.title("💼 AI Job Agent")
-st.caption("Live jobs → qualification-first matching → ranked applications")
+st.caption("Live jobs → qualification-first screening → ranked applications")
 
 if "profile" not in st.session_state:
     st.session_state.profile = None
@@ -25,10 +26,9 @@ with st.sidebar:
     )
     min_salary = st.number_input("Minimum salary ($)", min_value=0, value=60000, step=5000)
     min_score = st.slider("Minimum match score", 50, 100, 80)
-    max_results = st.slider("Maximum jobs to analyze", 10, 40, 20)
+    max_results = st.slider("Maximum jobs to analyze", 10, 50, 20)
 
 st.subheader("1. Resume")
-
 uploaded = st.file_uploader("Upload your resume PDF", type=["pdf"])
 
 if uploaded:
@@ -52,7 +52,6 @@ else:
         role_queries = [x.strip() for x in roles_text.splitlines() if x.strip()]
         jobs = []
 
-        # Remote: Himalayas is a public, no-key API.
         if "Remote" in work_style:
             for q in role_queries[:4]:
                 try:
@@ -60,8 +59,6 @@ else:
                 except Exception as e:
                     st.warning(f"Remote feed error for '{q}': {e}")
 
-        # Chicago / broader US: optional Adzuna integration.
-        # Add ADZUNA_APP_ID and ADZUNA_APP_KEY to Streamlit Secrets to enable it.
         if "Chicago" in location:
             try:
                 jobs.extend(search_adzuna(
@@ -75,7 +72,6 @@ else:
             except Exception as e:
                 st.warning(f"Chicago feed error: {e}")
 
-        # Deduplicate.
         unique = {}
         for j in jobs:
             key = j.get("id") or j.get("url") or (j.get("title"), j.get("company"))
@@ -84,8 +80,8 @@ else:
 
         if not jobs:
             st.warning(
-                "No live jobs were returned. Remote search uses Himalayas automatically. "
-                "For Chicago jobs, add Adzuna credentials in Streamlit Secrets."
+                "No live jobs were returned. Remote search works without a key. "
+                "Chicago search requires Adzuna credentials in Streamlit Secrets."
             )
         else:
             scored = []
@@ -95,9 +91,16 @@ else:
                     continue
                 scored.append((result, job))
 
-            scored.sort(key=lambda x: (x[0]["qualified"], x[0]["score"]), reverse=True)
-            displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
+            scored.sort(
+                key=lambda x: (
+                    x[0]["status"] == "QUALIFIED",
+                    x[0]["status"] == "REVIEW",
+                    x[0]["score"]
+                ),
+                reverse=True
+            )
 
+            displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
             st.success(f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold.")
 
             for result, job in displayed:
@@ -116,14 +119,16 @@ else:
                     with right:
                         st.metric("Match", f"{result['score']}%")
 
-                    if result["qualified"]:
-                        st.success("QUALIFIED — worth reviewing")
+                    if result["status"] == "QUALIFIED":
+                        st.success("QUALIFIED — worth applying")
+                    elif result["status"] == "REVIEW":
+                        st.warning("REVIEW — relevant, but qualification is not fully verified")
                     else:
                         st.error("DO NOT APPLY")
 
-                    st.write(job.get("description", "")[:1800])
+                    st.write(job.get("description", ""))
 
-                    st.markdown("**Why this score?**")
+                    st.markdown("**Screening analysis**")
                     for reason in result["reasons"]:
                         st.write("• " + reason)
 
@@ -135,6 +140,5 @@ else:
 
 st.divider()
 st.caption(
-    "Live remote listings are supplied by Himalayas. Chicago listings can be supplied by Adzuna. "
-    "This app does not submit applications automatically."
+    "The app screens live listings conservatively. It does not submit applications automatically."
 )

@@ -1,9 +1,9 @@
+
 import os
 import requests
 
 HIMALAYAS_URL = "https://himalayas.app/jobs/api/search"
 ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/us/search/1"
-
 
 def _himalayas_job(x):
     return {
@@ -27,27 +27,18 @@ def _himalayas_job(x):
         "required": [],
     }
 
-
 def search_himalayas(query, country="US", limit=20):
-    params = {
-        "q": query,
-        "country": country,
-        "sort": "relevant",
-        "page": 1,
-    }
+    params = {"q": query, "country": country, "sort": "relevant", "page": 1}
     r = requests.get(HIMALAYAS_URL, params=params, timeout=20)
     r.raise_for_status()
     data = r.json()
     raw = data.get("jobs", data.get("results", data if isinstance(data, list) else []))
     return [_himalayas_job(x) for x in raw[:limit]]
 
-
 def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
     app_id = os.getenv("ADZUNA_APP_ID")
     app_key = os.getenv("ADZUNA_APP_KEY")
 
-    # Streamlit Cloud exposes secrets through environment variables only
-    # if the app also maps them there; see app.py setup instructions.
     try:
         import streamlit as st
         app_id = app_id or st.secrets.get("ADZUNA_APP_ID")
@@ -57,9 +48,8 @@ def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
 
     if not app_id or not app_key:
         raise RuntimeError(
-            "Chicago live search needs an Adzuna API key. "
-            "Create an Adzuna developer account and add ADZUNA_APP_ID and "
-            "ADZUNA_APP_KEY in Streamlit App Settings → Secrets."
+            "Chicago live search needs Adzuna credentials. "
+            "Remote search does not require this key."
         )
 
     params = {
@@ -103,5 +93,4 @@ def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
             "skill_terms": [],
             "required": [],
         })
-
     return jobs
