@@ -1,13 +1,17 @@
 
+import json
+import os
+
 import streamlit as st
 from pypdf import PdfReader
 
-from matcher import normalize_profile, score_job, clean_html
+from matcher import normalize_profile, score_job, clean_html, requirement_matrix
 from jobs_api import search_himalayas, search_adzuna
+from ai_screen import ai_screen_job
 
 st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
 st.title("💼 AI Job Agent")
-st.caption("Live jobs → qualification-first screening → ranked applications")
+st.caption("Live jobs → requirement-by-requirement screening → ranked applications")
 
 if "profile" not in st.session_state:
     st.session_state.profile = None
@@ -27,6 +31,8 @@ with st.sidebar:
     min_salary = st.number_input("Minimum salary ($)", min_value=0, value=60000, step=5000)
     min_score = st.slider("Minimum match score", 50, 100, 80)
     max_results = st.slider("Maximum jobs to analyze", 10, 50, 20)
+    use_ai = st.checkbox("Use AI requirement analysis", value=True)
+    st.caption("AI analysis requires an OpenAI API key in Streamlit Secrets. The rule-based screen works without one.")
 
 st.subheader("1. Resume")
 uploaded = st.file_uploader("Upload your resume PDF", type=["pdf"])
@@ -105,7 +111,7 @@ else:
                 f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold."
             )
 
-            for result, job in displayed:
+            for idx, (result, job) in enumerate(displayed):
                 with st.container(border=True):
                     left, right = st.columns([4, 1])
 
@@ -128,15 +134,60 @@ else:
                     else:
                         st.error("DO NOT APPLY")
 
-                    # Display cleaned job description instead of provider HTML.
                     description = clean_html(job.get("description", ""))
                     if description:
-                        st.markdown("**Job description**")
-                        st.write(description)
+                        with st.expander("Job description", expanded=False):
+                            st.write(description)
 
-                    st.markdown("**Screening analysis**")
+                    st.markdown("**Initial screening**")
                     for reason in result["reasons"]:
                         st.write("• " + reason)
+
+                    # Requirement-by-requirement screen.
+                    with st.expander("🎯 Requirement-by-requirement analysis", expanded=True):
+                        matrix = requirement_matrix(st.session_state.profile, job)
+
+                        if matrix:
+                            for req in matrix:
+                                status = req["status"]
+                                if status == "MEETS":
+                                    st.success(f"✅ **MEETS** — {req['requirement']}\n\n{req['evidence']}")
+                                elif status == "PARTIAL":
+                                    st.warning(f"🟡 **PARTIAL** — {req['requirement']}\n\n{req['evidence']}")
+                                elif status == "MISSING":
+                                    st.error(f"❌ **NOT DEMONSTRATED** — {req['requirement']}\n\n{req['evidence']}")
+                                else:
+                                    st.info(f"❓ **CANNOT VERIFY** — {req['requirement']}\n\n{req['evidence']}")
+                        else:
+                            st.info("No explicit requirements could be extracted from this listing.")
+
+                        if use_ai:
+                            if st.button("Run AI requirement analysis", key=f"ai_{idx}"):
+                                with st.spinner("Reading the resume and full job description..."):
+                                    ai_result = ai_screen_job(
+                                        st.session_state.profile,
+                                        job
+                                    )
+                                if ai_result:
+                                    st.markdown("### AI screening result")
+                                    if ai_result.get("recommendation") == "APPLY":
+                                        st.success("AI recommendation: APPLY")
+                                    elif ai_result.get("recommendation") == "REVIEW":
+                                        st.warning("AI recommendation: REVIEW")
+                                    else:
+                                        st.error("AI recommendation: DO NOT APPLY")
+
+                                    st.write(ai_result.get("summary", ""))
+                                    for item in ai_result.get("requirements", []):
+                                        s = item.get("status", "CANNOT_VERIFY")
+                                        icon = {"MEETS": "✅", "PARTIAL": "🟡", "MISSING": "❌", "CANNOT_VERIFY": "❓"}.get(s, "❓")
+                                        st.write(f"{icon} **{s}** — {item.get('requirement', '')}")
+                                        if item.get("evidence"):
+                                            st.caption(item["evidence"])
+                                else:
+                                    st.warning(
+                                        "AI screening is not configured. Add OPENAI_API_KEY to Streamlit Secrets."
+                                    )
 
                     if job.get("salary"):
                         st.write(f"**Salary:** {job['salary']}")
@@ -145,4 +196,6 @@ else:
                         st.link_button("View / Apply", job["url"])
 
 st.divider()
-st.caption("Live listings are screened conservatively. Applications are not submitted automatically.")
+st.caption(
+    "This version screens applications conservatively. It does not submit applications automatically."
+)

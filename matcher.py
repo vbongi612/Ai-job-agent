@@ -19,7 +19,7 @@ SKILLS = [
     "interviews", "focus groups", "qualitative", "thematic analysis",
     "qualitative coding", "executive reporting", "executive presentation",
     "project management", "program management", "facilitation",
-    "workshop", "excel", "powerpoint"
+    "workshop", "excel", "powerpoint", "human resources", "hr"
 ]
 
 def clean_html(text):
@@ -58,6 +58,7 @@ def normalize_profile(text):
         "degree": degree,
         "roles": roles,
         "skills": skills,
+        "resume_text": text,
     }
 
 def _text(job):
@@ -146,3 +147,85 @@ def score_job(profile, job):
         "status": status,
         "reasons": reasons,
     }
+
+def _status(requirement, profile, text):
+    r = requirement.lower()
+    years = profile.get("years_experience", 0)
+    skills = " ".join(profile.get("skills", [])).lower()
+    roles = " ".join(profile.get("roles", [])).lower()
+    resume = profile.get("resume_text", "").lower()
+
+    nums = re.findall(r"(\d+)\+?\s+years?", r)
+    if nums:
+        needed = int(nums[0])
+        if years >= needed:
+            return "MEETS", f"Your profile indicates {years}+ years of experience."
+        return "MISSING", f"Your profile indicates {years}+ years, below the stated {needed}+ years."
+
+    if "bachelor" in r or "b.s." in r:
+        if profile.get("degree"):
+            return "MEETS", "A bachelor's degree is represented in the resume."
+        return "MISSING", "No bachelor's degree was detected in the resume."
+
+    terms = {
+        "organizational development": ["organizational development", "organizational effectiveness"],
+        "change management": ["change management"],
+        "human resources": ["human resources", "hr"],
+        "consulting": ["consulting", "consultant", "advisory"],
+        "stakeholder": ["stakeholder"],
+        "facilitation": ["facilitation", "facilitating", "workshop"],
+        "project management": ["project management", "program management"],
+        "qualitative": ["qualitative", "thematic", "interviews", "focus groups"],
+    }
+
+    for label, variants in terms.items():
+        if label in r or any(v in r for v in variants):
+            if any(v in resume or v in skills or v in roles for v in variants):
+                return "MEETS", f"Relevant evidence was detected for {label}."
+            return "MISSING", f"No clear resume evidence was detected for {label}."
+
+    if any(x in r for x in ["deep expertise", "extensive experience", "proven track record", "expert"]):
+        return "CANNOT_VERIFY", "The posting asks for substantial expertise, but the available resume/profile data cannot verify the depth required."
+
+    return "CANNOT_VERIFY", "This requirement needs semantic review of the full resume and posting."
+
+def requirement_matrix(profile, job):
+    text = clean_html(job.get("description", ""))
+    if not text:
+        return []
+
+    # Extract bullet-like requirements and requirement sentences.
+    candidates = []
+    for line in text.splitlines():
+        line = line.strip(" •-\t")
+        if len(line) >= 20 and len(line) <= 240:
+            if any(k in line.lower() for k in [
+                "required", "qualification", "experience", "degree", "ability",
+                "knowledge", "expertise", "skills", "you will", "must"
+            ]):
+                candidates.append(line)
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    for s in sentences:
+        s = s.strip()
+        if 30 <= len(s) <= 240 and any(k in s.lower() for k in [
+            "requires", "required", "experience", "degree", "expertise",
+            "ability", "knowledge", "skills", "must have"
+        ]):
+            candidates.append(s)
+
+    # Deduplicate while preserving order.
+    out = []
+    seen = set()
+    for c in candidates:
+        key = re.sub(r"\W+", " ", c.lower()).strip()
+        if key and key not in seen:
+            seen.add(key)
+            status, evidence = _status(c, profile, text.lower())
+            out.append({
+                "requirement": c,
+                "status": status,
+                "evidence": evidence
+            })
+
+    return out[:12]
