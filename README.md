@@ -1,16 +1,10 @@
-# AI Job Agent v7
+# AI Job Agent v8
 
-Adds the real AI qualification layer on top of the working v6 Chicago/Adzuna search.
+Fixes Streamlit rerun/state behavior:
+- Extracted resume text is persisted in session state.
+- Candidate profile persists after AI buttons and other interactions.
+- The UI shows Resume loaded ✓ after the initial upload.
+- AI screening reads the persisted resume text instead of relying on the uploader.
+- Job results are retained in session state.
 
-The AI:
-- compares the complete resume with the complete job posting;
-- separates required vs preferred qualifications where possible;
-- uses MEETS / PARTIAL / MISSING / CANNOT_VERIFY;
-- flags hard failures;
-- returns APPLY / REVIEW / DO_NOT_APPLY conservatively.
-
-Streamlit Secrets:
-OPENAI_API_KEY = "..."
-OPENAI_MODEL = "gpt-5.6"  # optional
-
-Never put API keys in GitHub.
+Keep OPENAI_API_KEY and Adzuna secrets in Streamlit Secrets, never GitHub.

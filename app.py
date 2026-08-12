@@ -10,8 +10,18 @@ st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
 st.title("💼 AI Job Agent")
 st.caption("Live jobs → qualification screening → requirement analysis")
 
-if "profile" not in st.session_state:
-    st.session_state.profile = None
+# Persist the extracted resume/profile across Streamlit reruns.
+# Buttons, expanders, and AI calls trigger reruns, so the uploader itself
+# cannot be the source of truth after the initial upload.
+for key, default in {
+    "profile": None,
+    "resume_name": None,
+    "resume_text": None,
+    "jobs": [],
+    "search_complete": False,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 with st.sidebar:
     st.header("Job criteria")
@@ -31,15 +41,27 @@ with st.sidebar:
     use_ai = st.checkbox("Use AI qualification analysis", value=True)
 
 st.subheader("1. Resume")
-uploaded = st.file_uploader("Upload your resume PDF", type=["pdf"])
+uploaded = st.file_uploader(
+    "Upload your resume PDF",
+    type=["pdf"],
+    key="resume_uploader"
+)
 
-if uploaded:
+if uploaded is not None:
+    # Store the extracted text immediately. The widget itself may reset on rerun.
     reader = PdfReader(uploaded)
-    resume_text = "\n".join((p.extract_text() or "") for p in reader.pages)
-    st.success(f"Read {len(reader.pages)} page(s).")
+    extracted = "\n".join((p.extract_text() or "") for p in reader.pages)
+    st.session_state.resume_text = extracted
+    st.session_state.resume_name = uploaded.name
 
+if st.session_state.profile:
+    st.success(f"Resume loaded ✓  {st.session_state.resume_name or ''}")
+    if st.button("Rebuild candidate profile"):
+        st.session_state.profile = normalize_profile(st.session_state.resume_text or "")
+elif st.session_state.resume_text:
+    st.success(f"Resume loaded ✓  {st.session_state.resume_name or ''}")
     if st.button("Build candidate profile", type="primary"):
-        st.session_state.profile = normalize_profile(resume_text)
+        st.session_state.profile = normalize_profile(st.session_state.resume_text)
 
 if st.session_state.profile:
     with st.expander("Candidate profile", expanded=False):
@@ -59,7 +81,7 @@ if "Chicago" in location:
                     st.code(result["details"])
 
 if not st.session_state.profile:
-    st.info("Upload your resume and build the candidate profile first.")
+    st.info("Upload your resume and build the candidate profile first. Once built, the profile stays loaded while you use the app.")
 else:
     if st.button("🔎 Find live jobs", type="primary"):
         role_queries = [x.strip() for x in roles_text.splitlines() if x.strip()]
@@ -96,6 +118,8 @@ else:
             key = j.get("id") or j.get("url") or (j.get("title"), j.get("company"))
             unique[key] = j
         jobs = list(unique.values())
+        st.session_state.jobs = jobs
+        st.session_state.search_complete = True
 
         if not jobs:
             st.warning("No live jobs were returned. Use 'Test Chicago job connection' above to diagnose the Chicago feed.")
@@ -164,7 +188,7 @@ else:
                             if st.button("Analyze this job with AI", key=f"ai_{idx}"):
                                 with st.spinner("Comparing the full resume with the full job posting..."):
                                     ai_result = ai_screen_job(
-                                        st.session_state.profile.get("resume_text", ""),
+                                        st.session_state.resume_text or st.session_state.profile.get("resume_text", ""),
                                         job
                                     )
 
