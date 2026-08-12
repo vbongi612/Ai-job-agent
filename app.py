@@ -1,4 +1,9 @@
 
+import json
+import os
+import re
+from pathlib import Path
+
 import streamlit as st
 from pypdf import PdfReader
 
@@ -7,21 +12,48 @@ from jobs_api import search_himalayas, search_adzuna, test_adzuna
 from ai_screen import ai_screen_job
 
 st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
-st.title("💼 AI Job Agent")
-st.caption("Live jobs → qualification screening → requirement analysis")
 
-# Persist the extracted resume/profile across Streamlit reruns.
-# Buttons, expanders, and AI calls trigger reruns, so the uploader itself
-# cannot be the source of truth after the initial upload.
+# Streamlit reruns the script after button clicks. Session state normally survives,
+# but we also persist the extracted profile in a small server-side JSON file so a
+# transient rerun/reconnect doesn't force the user to upload the resume again.
+STATE_FILE = Path("/tmp/ai_job_agent_state.json")
+
+def load_saved_state():
+    try:
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+def save_saved_state():
+    try:
+        payload = {
+            "resume_name": st.session_state.get("resume_name"),
+            "resume_text": st.session_state.get("resume_text"),
+            "profile": st.session_state.get("profile"),
+        }
+        STATE_FILE.write_text(json.dumps(payload))
+    except Exception:
+        pass
+
+saved = load_saved_state()
+
 for key, default in {
-    "profile": None,
-    "resume_name": None,
-    "resume_text": None,
+    "profile": saved.get("profile"),
+    "resume_name": saved.get("resume_name"),
+    "resume_text": saved.get("resume_text"),
     "jobs": [],
     "search_complete": False,
+    "ai_results": {},
 }.items():
-    if key not in st.session_state:
+    if key not in st.session_state or (st.session_state[key] is None and saved.get(key) is not None):
         st.session_state[key] = default
+
+st.title("💼 AI Job Agent")
+if st.session_state.profile:
+    st.success(f"Resume loaded ✓  {st.session_state.resume_name or 'Saved resume'}")
+st.caption("Live jobs → qualification screening → AI requirement analysis")
 
 with st.sidebar:
     st.header("Job criteria")
@@ -37,10 +69,13 @@ with st.sidebar:
     )
     min_salary = st.number_input("Minimum salary ($)", min_value=0, value=60000, step=5000)
     min_score = st.slider("Minimum match score", 50, 100, 80)
-    max_results = st.slider("Maximum jobs to analyze", 10, 50, 20)
-    use_ai = st.checkbox("Use AI qualification analysis", value=True)
+    max_results = st.slider("Maximum jobs to analyze", 5, 40, 15)
+    use_ai = st.checkbox("AI qualification analysis", value=True)
+    ai_top_n = st.slider("AI-analyze top jobs", 1, 5, 3)
+    st.caption("AI analysis uses your OpenAI API key from Streamlit Secrets.")
 
 st.subheader("1. Resume")
+
 uploaded = st.file_uploader(
     "Upload your resume PDF",
     type=["pdf"],
@@ -48,24 +83,39 @@ uploaded = st.file_uploader(
 )
 
 if uploaded is not None:
-    # Store the extracted text immediately. The widget itself may reset on rerun.
-    reader = PdfReader(uploaded)
-    extracted = "\n".join((p.extract_text() or "") for p in reader.pages)
-    st.session_state.resume_text = extracted
-    st.session_state.resume_name = uploaded.name
+    try:
+        reader = PdfReader(uploaded)
+        extracted = "\n".join((p.extract_text() or "") for p in reader.pages)
+        if extracted.strip():
+            st.session_state.resume_text = extracted
+            st.session_state.resume_name = uploaded.name
+            st.session_state.profile = normalize_profile(extracted)
+            save_saved_state()
+            st.success(f"Resume loaded and profile built ✓  {uploaded.name}")
+    except Exception as e:
+        st.error(f"Could not read the PDF: {e}")
 
 if st.session_state.profile:
-    st.success(f"Resume loaded ✓  {st.session_state.resume_name or ''}")
-    if st.button("Rebuild candidate profile"):
-        st.session_state.profile = normalize_profile(st.session_state.resume_text or "")
-elif st.session_state.resume_text:
-    st.success(f"Resume loaded ✓  {st.session_state.resume_name or ''}")
-    if st.button("Build candidate profile", type="primary"):
-        st.session_state.profile = normalize_profile(st.session_state.resume_text)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Rebuild profile from saved resume"):
+            st.session_state.profile = normalize_profile(st.session_state.resume_text or "")
+            save_saved_state()
+            st.success("Candidate profile rebuilt.")
+    with col2:
+        if st.button("Clear saved resume"):
+            for k in ["profile", "resume_name", "resume_text", "jobs", "ai_results"]:
+                st.session_state[k] = None if k in ["profile", "resume_name", "resume_text"] else {}
+            try:
+                STATE_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+            st.rerun()
 
-if st.session_state.profile:
     with st.expander("Candidate profile", expanded=False):
         st.json(st.session_state.profile)
+else:
+    st.info("Upload your resume. The app will save the extracted profile during this session.")
 
 st.subheader("2. Live job search")
 
@@ -81,7 +131,7 @@ if "Chicago" in location:
                     st.code(result["details"])
 
 if not st.session_state.profile:
-    st.info("Upload your resume and build the candidate profile first. Once built, the profile stays loaded while you use the app.")
+    st.info("Build your candidate profile before searching.")
 else:
     if st.button("🔎 Find live jobs", type="primary"):
         role_queries = [x.strip() for x in roles_text.splitlines() if x.strip()]
@@ -96,9 +146,6 @@ else:
                     errors.append(f"Remote / Himalayas ({q}): {e}")
 
         if "Chicago" in location:
-            # Search each target role separately. Adzuna's documented examples use
-            # ordinary keyword queries; separate searches are more reliable than
-            # sending one "A OR B OR C" string.
             for q in role_queries[:4]:
                 try:
                     jobs.extend(search_adzuna(
@@ -118,120 +165,131 @@ else:
             key = j.get("id") or j.get("url") or (j.get("title"), j.get("company"))
             unique[key] = j
         jobs = list(unique.values())
-        st.session_state.jobs = jobs
+
+        scored = []
+        for job in jobs:
+            if job.get("salary_min") and job["salary_min"] < min_salary:
+                continue
+            scored.append((score_job(st.session_state.profile, job), job))
+
+        scored.sort(
+            key=lambda x: (
+                x[0]["status"] == "QUALIFIED",
+                x[0]["status"] == "REVIEW",
+                x[0]["score"]
+            ),
+            reverse=True
+        )
+
+        displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
+        st.session_state.jobs = [j for _, j in displayed]
         st.session_state.search_complete = True
 
-        if not jobs:
-            st.warning("No live jobs were returned. Use 'Test Chicago job connection' above to diagnose the Chicago feed.")
-        else:
-            scored = []
-            for job in jobs:
-                if job.get("salary_min") and job["salary_min"] < min_salary:
-                    continue
-                scored.append((score_job(st.session_state.profile, job), job))
+        # AI runs as part of the search action, so there is no second button
+        # that can reset the resume uploader state.
+        if use_ai and displayed:
+            st.info(f"Running AI qualification analysis on the top {min(ai_top_n, len(displayed))} matches…")
+            st.session_state.ai_results = {}
+            for i, (result, job) in enumerate(displayed[:ai_top_n]):
+                try:
+                    ai_result = ai_screen_job(
+                        st.session_state.resume_text or "",
+                        job
+                    )
+                    st.session_state.ai_results[job.get("id") or str(i)] = ai_result
+                except Exception as e:
+                    st.session_state.ai_results[job.get("id") or str(i)] = {
+                        "recommendation": "REVIEW",
+                        "summary": f"AI analysis failed safely: {e}",
+                        "hard_failures": [],
+                        "requirements": []
+                    }
 
-            scored.sort(
-                key=lambda x: (
-                    x[0]["status"] == "QUALIFIED",
-                    x[0]["status"] == "REVIEW",
-                    x[0]["score"]
-                ),
-                reverse=True
-            )
+        st.success(
+            f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold."
+        )
 
-            displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
-            st.success(f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold.")
+    # Results persist across reruns because they are in session state.
+    if st.session_state.get("search_complete"):
+        displayed = []
+        for job in st.session_state.jobs:
+            displayed.append((score_job(st.session_state.profile, job), job))
 
-            for idx, (result, job) in enumerate(displayed):
-                with st.container(border=True):
-                    left, right = st.columns([4, 1])
-                    with left:
-                        st.markdown(f"### {job['title']}")
-                        st.write(f"**{job['company']}** · {job.get('location', 'Not specified')} · {job.get('employment_type', 'Not specified')}")
-                        if job.get("source"):
-                            st.caption(f"Source: {job['source']}")
-                    with right:
-                        st.metric("Match", f"{result['score']}%")
+        for idx, (result, job) in enumerate(displayed):
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                with left:
+                    st.markdown(f"### {job['title']}")
+                    st.write(
+                        f"**{job['company']}** · {job.get('location', 'Not specified')} "
+                        f"· {job.get('employment_type', 'Not specified')}"
+                    )
+                    if job.get("source"):
+                        st.caption(f"Source: {job['source']}")
+                with right:
+                    st.metric("Match", f"{result['score']}%")
 
-                    if result["status"] == "QUALIFIED":
-                        st.success("QUALIFIED — worth applying")
-                    elif result["status"] == "REVIEW":
-                        st.warning("REVIEW — relevant, but qualification is not fully verified")
-                    else:
-                        st.error("DO NOT APPLY")
+                status = result["status"]
+                if status == "QUALIFIED":
+                    st.success("QUALIFIED — worth applying")
+                elif status == "REVIEW":
+                    st.warning("REVIEW — relevant, but qualification is not fully verified")
+                else:
+                    st.error("DO NOT APPLY")
 
-                    description = clean_html(job.get("description", ""))
-                    if description:
-                        with st.expander("Job description"):
-                            st.write(description)
+                description = clean_html(job.get("description", ""))
+                if description:
+                    with st.expander("Job description"):
+                        st.write(description)
 
-                    st.markdown("**Screening analysis**")
-                    for reason in result["reasons"]:
-                        st.write("• " + reason)
+                st.markdown("**Initial screening**")
+                for reason in result["reasons"]:
+                    st.write("• " + reason)
 
-                    with st.expander("🎯 Requirement-by-requirement analysis"):
-                        matrix = requirement_matrix(st.session_state.profile, job)
-                        if matrix:
-                            for req in matrix:
-                                s = req["status"]
-                                if s == "MEETS":
-                                    st.success(f"✅ **MEETS** — {req['requirement']}\n\n{req['evidence']}")
-                                elif s == "PARTIAL":
-                                    st.warning(f"🟡 **PARTIAL** — {req['requirement']}\n\n{req['evidence']}")
-                                elif s == "MISSING":
-                                    st.error(f"❌ **NOT DEMONSTRATED** — {req['requirement']}\n\n{req['evidence']}")
-                                else:
-                                    st.info(f"❓ **CANNOT VERIFY** — {req['requirement']}\n\n{req['evidence']}")
+                with st.expander("🎯 Requirement-by-requirement analysis"):
+                    matrix = requirement_matrix(st.session_state.profile, job)
+                    if matrix:
+                        for req in matrix:
+                            s = req["status"]
+                            line = f"{req['requirement']}\n\n{req['evidence']}"
+                            if s == "MEETS":
+                                st.success("✅ **MEETS** — " + line)
+                            elif s == "PARTIAL":
+                                st.warning("🟡 **PARTIAL** — " + line)
+                            elif s == "MISSING":
+                                st.error("❌ **NOT DEMONSTRATED** — " + line)
+                            else:
+                                st.info("❓ **CANNOT VERIFY** — " + line)
 
-                    if use_ai:
-                        with st.expander("🤖 AI qualification analysis"):
-                            if st.button("Analyze this job with AI", key=f"ai_{idx}"):
-                                with st.spinner("Comparing the full resume with the full job posting..."):
-                                    ai_result = ai_screen_job(
-                                        st.session_state.resume_text or st.session_state.profile.get("resume_text", ""),
-                                        job
-                                    )
+                key = job.get("id") or str(idx)
+                ai_result = st.session_state.ai_results.get(key)
+                if ai_result:
+                    with st.expander("🤖 AI qualification analysis", expanded=True):
+                        rec = ai_result.get("recommendation", "REVIEW")
+                        if rec == "APPLY":
+                            st.success("🤖 AI RECOMMENDATION: APPLY")
+                        elif rec == "REVIEW":
+                            st.warning("🤖 AI RECOMMENDATION: REVIEW")
+                        else:
+                            st.error("🤖 AI RECOMMENDATION: DO NOT APPLY")
 
-                                if not ai_result:
-                                    st.error(
-                                        "AI analysis could not run. Add OPENAI_API_KEY to Streamlit Secrets "
-                                        "and make sure the API key has access to the selected model."
-                                    )
-                                else:
-                                    recommendation = ai_result.get("recommendation", "REVIEW")
-                                    if recommendation == "APPLY":
-                                        st.success("🤖 AI RECOMMENDATION: APPLY")
-                                    elif recommendation == "REVIEW":
-                                        st.warning("🤖 AI RECOMMENDATION: REVIEW")
-                                    else:
-                                        st.error("🤖 AI RECOMMENDATION: DO NOT APPLY")
+                        st.write(ai_result.get("summary", ""))
 
-                                    st.write(ai_result.get("summary", ""))
+                        for item in ai_result.get("hard_failures", []):
+                            st.error("Hard issue: " + item)
 
-                                    if ai_result.get("hard_failures"):
-                                        st.markdown("**Hard qualification issues**")
-                                        for item in ai_result["hard_failures"]:
-                                            st.error(item)
+                        for item in ai_result.get("requirements", []):
+                            s = item.get("status", "CANNOT_VERIFY")
+                            icon = {"MEETS":"✅", "PARTIAL":"🟡", "MISSING":"❌", "CANNOT_VERIFY":"❓"}.get(s, "❓")
+                            importance = item.get("importance", "UNCLEAR")
+                            st.write(f"{icon} **{s} · {importance}** — {item.get('requirement','')}")
+                            if item.get("evidence"):
+                                st.caption(item["evidence"])
 
-                                    st.markdown("**AI requirement checks**")
-                                    for item in ai_result.get("requirements", []):
-                                        s = item.get("status", "CANNOT_VERIFY")
-                                        icon = {
-                                            "MEETS": "✅",
-                                            "PARTIAL": "🟡",
-                                            "MISSING": "❌",
-                                            "CANNOT_VERIFY": "❓"
-                                        }.get(s, "❓")
-                                        st.write(
-                                            f"{icon} **{s}** — {item.get('requirement', '')}"
-                                        )
-                                        if item.get("evidence"):
-                                            st.caption(item["evidence"])
-
-                    if job.get("salary"):
-                        st.write(f"**Salary:** {job['salary']}")
-                    if job.get("url"):
-                        st.link_button("View / Apply", job["url"])
+                if job.get("salary"):
+                    st.write(f"**Salary:** {job['salary']}")
+                if job.get("url"):
+                    st.link_button("View / Apply", job["url"])
 
 st.divider()
 st.caption("Applications are not submitted automatically.")
