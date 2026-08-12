@@ -1,119 +1,140 @@
-import json
-from pathlib import Path
-
 import streamlit as st
 from pypdf import PdfReader
 
-from matcher import score_job, normalize_profile
-from openai_adapter import extract_profile_with_openai, evaluate_job_with_openai
+from matcher import normalize_profile, score_job
+from jobs_api import search_himalayas, search_adzuna
 
 st.set_page_config(page_title="AI Job Agent", page_icon="💼", layout="wide")
 st.title("💼 AI Job Agent")
-st.caption("Resume → qualification-first job matching → application preparation")
+st.caption("Live jobs → qualification-first matching → ranked applications")
 
 if "profile" not in st.session_state:
     st.session_state.profile = None
 
 with st.sidebar:
-    st.header("Search criteria")
-    roles = st.text_input(
+    st.header("Job criteria")
+    roles_text = st.text_area(
         "Target roles",
-        "Organizational Development, Change Management, People Strategy, Management Consulting"
+        "Organizational Development\nChange Management\nPeople Strategy\nManagement Consulting"
     )
     location = st.text_input("Location", "Chicago, IL")
-    work_style = st.multiselect("Work style", ["Hybrid", "Remote", "On-site"], ["Hybrid", "Remote"])
+    work_style = st.multiselect(
+        "Work style",
+        ["Hybrid", "Remote", "On-site"],
+        ["Hybrid", "Remote"]
+    )
     min_salary = st.number_input("Minimum salary ($)", min_value=0, value=60000, step=5000)
     min_score = st.slider("Minimum match score", 50, 100, 80)
+    max_results = st.slider("Maximum jobs to analyze", 10, 40, 20)
 
-st.subheader("1. Upload your resume")
-uploaded = st.file_uploader("PDF resume", type=["pdf"])
+st.subheader("1. Resume")
+
+uploaded = st.file_uploader("Upload your resume PDF", type=["pdf"])
 
 if uploaded:
     reader = PdfReader(uploaded)
     resume_text = "\n".join((p.extract_text() or "") for p in reader.pages)
-    st.success(f"Read {len(reader.pages)} page(s) from {uploaded.name}")
+    st.success(f"Read {len(reader.pages)} page(s).")
 
     if st.button("Build candidate profile", type="primary"):
-        with st.spinner("Building profile..."):
-            profile = extract_profile_with_openai(resume_text)
-            st.session_state.profile = profile or normalize_profile(resume_text)
+        st.session_state.profile = normalize_profile(resume_text)
 
 if st.session_state.profile:
-    st.subheader("2. Candidate profile")
-    st.json(st.session_state.profile)
+    with st.expander("Candidate profile", expanded=False):
+        st.json(st.session_state.profile)
 
-st.subheader("3. Jobs")
-st.info(
-    "Representative job records are included so you can test the matching engine immediately. "
-    "Phase 2 replaces these with permitted live job feeds."
-)
+st.subheader("2. Find live jobs")
 
-sample_jobs = json.loads(Path("sample_jobs.json").read_text())
-filtered = []
+if not st.session_state.profile:
+    st.info("Upload your resume and build the candidate profile first.")
+else:
+    if st.button("🔎 Find live jobs", type="primary"):
+        role_queries = [x.strip() for x in roles_text.splitlines() if x.strip()]
+        jobs = []
 
-for job in sample_jobs:
-    if job.get("salary_min", 0) < min_salary:
-        continue
+        # Remote: Himalayas is a public, no-key API.
+        if "Remote" in work_style:
+            for q in role_queries[:4]:
+                try:
+                    jobs.extend(search_himalayas(q, country="US", limit=max_results))
+                except Exception as e:
+                    st.warning(f"Remote feed error for '{q}': {e}")
 
-    loc = job.get("location", "").lower()
-    city = location.lower().split(",")[0].strip()
-    if city not in loc and loc != "remote":
-        if "remote" not in [x.lower() for x in work_style]:
-            continue
+        # Chicago / broader US: optional Adzuna integration.
+        # Add ADZUNA_APP_ID and ADZUNA_APP_KEY to Streamlit Secrets to enable it.
+        if "Chicago" in location:
+            try:
+                jobs.extend(search_adzuna(
+                    query=" OR ".join(role_queries[:3]),
+                    where="Chicago",
+                    salary_min=min_salary,
+                    limit=max_results
+                ))
+            except RuntimeError as e:
+                st.info(str(e))
+            except Exception as e:
+                st.warning(f"Chicago feed error: {e}")
 
-    filtered.append(job)
+        # Deduplicate.
+        unique = {}
+        for j in jobs:
+            key = j.get("id") or j.get("url") or (j.get("title"), j.get("company"))
+            unique[key] = j
+        jobs = list(unique.values())
 
-for job in filtered:
-    if st.session_state.profile:
-        result = score_job(st.session_state.profile, job)
-    else:
-        result = {"score": 0, "qualified": False, "reasons": ["Upload a resume first."]}
-
-    if result["score"] < min_score:
-        continue
-
-    with st.container(border=True):
-        c1, c2 = st.columns([4, 1])
-        with c1:
-            st.markdown(f"### {job['title']}")
-            st.write(f"**{job['company']}** · {job['location']} · {job['employment_type']}")
-        with c2:
-            st.metric("Match", f"{result['score']}%")
-
-        if result["qualified"]:
-            st.success("QUALIFIED")
+        if not jobs:
+            st.warning(
+                "No live jobs were returned. Remote search uses Himalayas automatically. "
+                "For Chicago jobs, add Adzuna credentials in Streamlit Secrets."
+            )
         else:
-            st.error("DO NOT APPLY")
+            scored = []
+            for job in jobs:
+                result = score_job(st.session_state.profile, job)
+                if job.get("salary_min") and job["salary_min"] < min_salary:
+                    continue
+                scored.append((result, job))
 
-        st.write(job["description"])
+            scored.sort(key=lambda x: (x[0]["qualified"], x[0]["score"]), reverse=True)
+            displayed = [x for x in scored if x[0]["score"] >= min_score][:max_results]
 
-        left, right = st.columns(2)
-        with left:
-            st.markdown("**Qualification analysis**")
-            for reason in result["reasons"]:
-                st.write("• " + reason)
-        with right:
-            st.markdown("**Required qualifications**")
-            for req in job["required"]:
-                st.write("• " + req)
+            st.success(f"Analyzed {len(scored)} live listings; showing {len(displayed)} above your threshold.")
 
-        if st.button("Evaluate with AI", key=f"ai_{job['id']}"):
-            ai_result = evaluate_job_with_openai(st.session_state.profile, job)
-            if ai_result:
-                st.json(ai_result)
-            else:
-                st.warning("Set OPENAI_API_KEY to enable the AI evaluator.")
+            for result, job in displayed:
+                with st.container(border=True):
+                    left, right = st.columns([4, 1])
+
+                    with left:
+                        st.markdown(f"### {job['title']}")
+                        st.write(
+                            f"**{job['company']}** · {job.get('location', 'Not specified')} "
+                            f"· {job.get('employment_type', 'Not specified')}"
+                        )
+                        if job.get("source"):
+                            st.caption(f"Source: {job['source']}")
+
+                    with right:
+                        st.metric("Match", f"{result['score']}%")
+
+                    if result["qualified"]:
+                        st.success("QUALIFIED — worth reviewing")
+                    else:
+                        st.error("DO NOT APPLY")
+
+                    st.write(job.get("description", "")[:1800])
+
+                    st.markdown("**Why this score?**")
+                    for reason in result["reasons"]:
+                        st.write("• " + reason)
+
+                    if job.get("salary"):
+                        st.write(f"**Salary:** {job['salary']}")
+
+                    if job.get("url"):
+                        st.link_button("View / Apply", job["url"])
 
 st.divider()
-st.subheader("Roadmap")
-st.markdown("""
-**Phase 1 — current:** resume parsing + qualification-first matching
-
-**Phase 2:** live job APIs / permitted feeds + database + deduplication
-
-**Phase 3:** tailored resume + cover letter + application-question generator
-
-**Phase 4:** application autofill with human approval
-
-**Phase 5:** controlled auto-submit for sites where automation is permitted
-""")
+st.caption(
+    "Live remote listings are supplied by Himalayas. Chicago listings can be supplied by Adzuna. "
+    "This app does not submit applications automatically."
+)

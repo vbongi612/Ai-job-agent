@@ -1,22 +1,41 @@
-# AI Job Agent — MVP
+# AI Job Agent — Live Jobs MVP
 
-This local prototype:
-1. Accepts a resume PDF.
-2. Extracts a structured candidate profile.
-3. Lets you define target roles, location, salary, and minimum match score.
-4. Scores jobs using qualification-first matching.
-5. Flags hard requirement failures.
-6. Provides an OpenAI-powered evaluator when `OPENAI_API_KEY` is configured.
+This version replaces the sample jobs with live job feeds.
 
-## Run
+## Included
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
+- Resume PDF upload
+- Candidate profile extraction
+- Qualification-first scoring
+- Live remote job search via Himalayas (no API key)
+- Optional Chicago/US job search via Adzuna
+- Salary filtering
+- Match-score filtering
+- Direct application links
+
+Himalayas is a public JSON API for remote jobs and requires no authentication.
+Adzuna requires an `app_id` and `app_key`.
+
+## Streamlit Secrets
+
+To enable Chicago/US search, add:
+
+```toml
+ADZUNA_APP_ID = "your_app_id"
+ADZUNA_APP_KEY = "your_app_key"
 ```
 
-The MVP uses representative jobs in `sample_jobs.json`. Replace that fixture with permitted live job feeds in the next phase.
+in Streamlit App Settings → Secrets.
 
-The prototype does not auto-submit applications. The safe next phases are live job ingestion, application-question generation, human approval, browser autofill, and controlled submission where automation is permitted.
+Do not commit API keys to GitHub.
+
+## Next phase
+
+- Better requirement extraction with an LLM
+- Persistent database
+- Job history / deduplication
+- Tailored resume generation
+- Cover letters
+- Application-question generation
+- Human-approved browser autofill
+- Application tracker
