@@ -76,6 +76,17 @@ with st.sidebar:
     ai_top_n = st.slider("AI-analyze top jobs", 1, 5, 3)
     st.caption("AI analysis uses your OpenAI API key from Streamlit Secrets.")
 
+    st.subheader("Job sources")
+    use_adzuna = st.checkbox("Adzuna", value=True)
+    use_himalayas = st.checkbox("Himalayas", value=True)
+    use_greenhouse = st.checkbox("Greenhouse public boards", value=True)
+    use_lever = st.checkbox("Lever public boards", value=True)
+    use_ashby = st.checkbox("Ashby public boards", value=True)
+    with st.expander("Public ATS board lists"):
+        greenhouse_boards = st.text_area("Greenhouse board tokens (one per line)", "")
+        lever_boards = st.text_area("Lever accounts (one per line)", "")
+        ashby_boards = st.text_area("Ashby job boards (one per line)", "")
+
 st.subheader("1. Resume")
 
 uploaded = st.file_uploader(
@@ -120,6 +131,10 @@ else:
     st.info("Upload your resume. The app will save the extracted profile during this session.")
 
 st.subheader("2. Live job search")
+with st.expander("📡 Source status", expanded=False):
+    st.write("Connected: Adzuna · Himalayas")
+    st.write("Public ATS adapters: Greenhouse · Lever · Ashby")
+    st.caption("LinkedIn, Indeed, and ZipRecruiter are not scraped or bypassed; authorized API/partner access can be added later.")
 
 if "Chicago" in location:
     with st.expander("Chicago / Adzuna connection", expanded=False):
@@ -141,24 +156,22 @@ else:
         jobs = []
         errors = []
 
-        if "Remote" in work_style:
+        if use_himalayas and "Remote" in work_style:
             for q in role_queries[:4]:
-                try:
-                    jobs.extend(search_himalayas(q, country="US", limit=max_results))
-                except Exception as e:
-                    errors.append(f"Remote / Himalayas ({q}): {e}")
+                try: jobs.extend(search_himalayas(q, country="US", limit=max_results))
+                except Exception as e: errors.append(f"Remote / Himalayas ({q}): {e}")
 
-        if "Chicago" in location:
+        if use_adzuna and "Chicago" in location:
             for q in role_queries[:4]:
-                try:
-                    jobs.extend(search_adzuna(
-                        query=q,
-                        where="Chicago",
-                        salary_min=min_salary,
-                        limit=max_results
-                    ))
-                except Exception as e:
-                    errors.append(f"Chicago / Adzuna ({q}): {e}")
+                try: jobs.extend(search_adzuna(query=q, where="Chicago", salary_min=min_salary, limit=max_results))
+                except Exception as e: errors.append(f"Chicago / Adzuna ({q}): {e}")
+
+        if use_greenhouse and greenhouse_boards.strip():
+            jobs.extend(search_greenhouse(parse_slugs(greenhouse_boards), role_queries, location, max_results*2))
+        if use_lever and lever_boards.strip():
+            jobs.extend(search_lever(parse_slugs(lever_boards), role_queries, location, max_results*2))
+        if use_ashby and ashby_boards.strip():
+            jobs.extend(search_ashby(parse_slugs(ashby_boards), role_queries, location, max_results*2))
 
         for err in errors:
             st.error(err)
@@ -168,6 +181,11 @@ else:
             key = j.get("id") or j.get("url") or (j.get("title"), j.get("company"))
             unique[key] = j
         jobs = list(unique.values())
+        if jobs:
+            counts={}
+            for j in jobs:
+                s=j.get("source","Unknown"); counts[s]=counts.get(s,0)+1
+            st.caption("Listings by source: "+" · ".join(f"{k}: {v}" for k,v in sorted(counts.items())))
 
         scored = []
         for job in jobs:

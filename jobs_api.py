@@ -156,3 +156,81 @@ def search_adzuna(query, where="Chicago", salary_min=0, limit=20):
             "required": [],
         })
     return jobs
+
+
+def _norm_public_job(source, raw, title, company, location, description, url,
+                     salary_min=None, salary_max=None, employment_type=None):
+    return {
+        "id": f"{source}:{raw}",
+        "title": title or "Untitled",
+        "company": company or "Unknown company",
+        "location": location or "Not specified",
+        "employment_type": employment_type or "Not specified",
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "salary": (f"${salary_min:,.0f}–${salary_max:,.0f}"
+                   if isinstance(salary_min,(int,float)) or isinstance(salary_max,(int,float)) else None),
+        "description": description or "",
+        "url": url,
+        "source": source,
+        "role_terms": [title or ""],
+        "skill_terms": [],
+        "required": [],
+    }
+
+def _public_job_matches(job, queries, location=""):
+    hay = f"{job.get('title','')} {job.get('description','')}".lower()
+    role_ok = not queries or any(q.lower() in hay for q in queries)
+    wanted_city = (location or "").lower().split(",")[0].strip()
+    loc = (job.get("location") or "").lower()
+    return role_ok and (not wanted_city or wanted_city in loc or "remote" in loc)
+
+def search_greenhouse(board_tokens, queries, location="", limit=50):
+    out=[]
+    for token in board_tokens:
+        try:
+            r=requests.get(f"https://boards-api.greenhouse.io/v1/boards/{token.strip()}/jobs",
+                           params={"content":"true"},timeout=20); r.raise_for_status()
+            for x in r.json().get("jobs",[]):
+                loc=x.get("location",{}); loc=loc.get("name","") if isinstance(loc,dict) else loc
+                j=_norm_public_job("Greenhouse",x.get("id"),x.get("title"),token,loc,x.get("content",""),x.get("absolute_url"))
+                if _public_job_matches(j,queries,location): out.append(j)
+                if len(out)>=limit:return out
+        except Exception: continue
+    return out
+
+def search_lever(accounts, queries, location="", limit=50):
+    out=[]
+    for account in accounts:
+        try:
+            r=requests.get(f"https://api.lever.co/v0/postings/{account.strip()}",
+                           params={"mode":"json"},timeout=20); r.raise_for_status()
+            for x in r.json():
+                c=x.get("categories") or {}
+                j=_norm_public_job("Lever",x.get("id"),x.get("text"),account,c.get("location",""),
+                                   x.get("descriptionPlain") or x.get("description",""),
+                                   x.get("hostedUrl") or x.get("applyUrl"))
+                if _public_job_matches(j,queries,location): out.append(j)
+                if len(out)>=limit:return out
+        except Exception: continue
+    return out
+
+def search_ashby(board_names, queries, location="", limit=50):
+    out=[]
+    for board in board_names:
+        try:
+            r=requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{board.strip()}",
+                           params={"includeCompensation":"true"},timeout=20); r.raise_for_status()
+            for x in r.json().get("jobs",[]):
+                locs=[x.get("location","")]+[z.get("location","") for z in (x.get("secondaryLocations") or [])]
+                j=_norm_public_job("Ashby",x.get("jobUrl") or x.get("title"),x.get("title"),board,
+                                   ", ".join(z for z in locs if z),
+                                   x.get("descriptionPlain") or x.get("descriptionHtml",""),
+                                   x.get("jobUrl") or x.get("applyUrl"))
+                if _public_job_matches(j,queries,location): out.append(j)
+                if len(out)>=limit:return out
+        except Exception: continue
+    return out
+
+def parse_slugs(text):
+    return [x.strip() for x in re.split(r"[\n,]+",text or "") if x.strip()]

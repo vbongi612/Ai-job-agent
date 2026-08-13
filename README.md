@@ -1,10 +1,12 @@
-# AI Job Agent v8
+# AI Job Agent v13
 
-Fixes Streamlit rerun/state behavior:
-- Extracted resume text is persisted in session state.
-- Candidate profile persists after AI buttons and other interactions.
-- The UI shows Resume loaded ✓ after the initial upload.
-- AI screening reads the persisted resume text instead of relying on the uploader.
-- Job results are retained in session state.
+Multi-source public job aggregation using employer-published ATS endpoints.
 
-Keep OPENAI_API_KEY and Adzuna secrets in Streamlit Secrets, never GitHub.
+Sources: Adzuna, Himalayas, Greenhouse, Lever, Ashby.
+
+The Target Roles field remains the primary relevance signal. Greenhouse,
+Lever, and Ashby require employer board identifiers because their public
+endpoints are exposed per employer board.
+
+LinkedIn, Indeed, and ZipRecruiter are not scraped or bypassed. Authorized
+API/partner access can be added later.
