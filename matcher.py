@@ -197,6 +197,66 @@ def score_job(profile, job, target_roles=None):
         "skill_alignment": overlap,
     }
 
+def _status(requirement, profile, job_text):
+    """
+    Classify an extracted job requirement against the resume profile.
+
+    This helper was missing in the previous v13 build, which caused the
+    NameError shown in the app when requirement analysis was expanded.
+    """
+    req = (requirement or "").lower()
+    resume = str(profile.get("resume_text", "")).lower()
+
+    # Strong negative signals: explicit requirements that are clearly absent.
+    degree_required = any(x in req for x in [
+        "bachelor", "b.s.", "b.a.", "master", "m.s.", "m.a.", "mba",
+        "degree required", "degree in"
+    ])
+    if degree_required and not profile.get("degree"):
+        return "MISSING", "No matching degree was detected in the resume."
+
+    # Experience requirement.
+    years = 0
+    import re as _re
+    year_matches = [int(x) for x in _re.findall(r"(\d+)\+?\s*years?", req)]
+    if year_matches:
+        required_years = max(year_matches)
+        candidate_years = int(profile.get("years_experience") or 0)
+        if candidate_years >= required_years:
+            return "MATCH", f"Resume profile indicates about {candidate_years} years of experience."
+        if candidate_years:
+            return "PARTIAL", f"Resume profile indicates about {candidate_years} years; requirement asks for {required_years}."
+        return "MISSING", f"Requirement asks for {required_years}+ years; no matching years were detected."
+
+    # Skills/keywords: use the profile's detected skills first, then exact
+    # phrase presence in the resume.
+    profile_skills = set(str(x).lower() for x in (profile.get("skills") or []))
+    for skill in profile_skills:
+        if skill in req:
+            return "MATCH", f"Resume contains the related skill: {skill}."
+
+    # Role/domain evidence.
+    role_terms = set(str(x).lower() for x in (profile.get("roles") or []))
+    for role in role_terms:
+        if role in req:
+            return "MATCH", f"Resume profile contains related role/domain experience: {role}."
+
+    # Direct phrase evidence from the resume.
+    meaningful = [
+        w for w in _re.findall(r"[a-z][a-z-]{3,}", req)
+        if w not in {"required", "preferred", "experience", "ability", "knowledge",
+                     "skills", "candidate", "years", "working", "including",
+                     "strong", "excellent"}
+    ]
+    hits = [w for w in meaningful if w in resume]
+    if len(hits) >= 2:
+        return "MATCH", "Resume contains multiple relevant requirement terms: " + ", ".join(hits[:5]) + "."
+
+    if hits:
+        return "PARTIAL", "Resume contains some related terminology: " + hits[0] + "."
+
+    return "UNCLEAR", "The available resume text does not provide enough evidence to verify this requirement."
+
 def requirement_matrix(profile, job):
     text = clean_html(job.get("description", ""))
     if not text:
